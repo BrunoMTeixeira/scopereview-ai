@@ -8,15 +8,18 @@ LABEL version="1.0.0"
 # Directório de trabalho
 WORKDIR /app
 
+# Instalar o curl para que o healthcheck do docker-compose funcione
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # Instalar dependências primeiro (aproveita cache do Docker)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código fonte
-COPY src/ ./src/
+COPY src/ .
 
 # Expor porta
 EXPOSE 8000
 
 # Comando de arranque
-CMD ["uvicorn", "src.agent:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
