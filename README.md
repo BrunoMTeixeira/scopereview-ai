@@ -1,222 +1,284 @@
-# ScopeReview AI (PoC)
+# ScopeReview AI — Automated PR Analysis for Azure DevOps
 
-> Enterprise-grade Automated Pull Request Agent for Azure DevOps, powered by LLMs via Azure AI Foundry.
-> Features a Dual-Agent architecture for both **Code Quality** and **Business Requirements** validation.
+> Enterprise-grade hybrid pipeline system for automated **code review** and **requirements validation** in Azure DevOps Pull Requests, powered by Deterministic Static Analysis + Llama-3.3-70B-Instruct via Azure AI Foundry.
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Azure](https://img.shields.io/badge/Azure-AI_Foundry-0078D4?style=flat&logo=microsoftazure&logoColor=white)](https://ai.azure.com/)
+[![Azure AI](https://img.shields.io/badge/Azure-AI_Foundry-0078D4?style=flat&logo=microsoftazure&logoColor=white)](https://ai.azure.com/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
 
 ---
 
-## What this does
+## What it does
 
-When a developer opens a Pull Request on Azure DevOps, the system triggers a **Dual-Agent Pipeline**:
+When a developer creates or updates a Pull Request on Azure DevOps, the system automatically runs a sequential orchestrator:
 
-1. **Code Review Agent:** Fetches changed files, splits them into logical blocks, and analyses them for security
-   vulnerabilities, bugs, and code quality issues.
-2. **Requirements Validation Agent:** Fetches linked Azure DevOps Work Items (Acceptance Criteria) and any global
-   repository rules (`.codereview.yml`), cross-referencing them against the submitted code to ensure business logic is
-   fully implemented.
+1. **Code Review Agent (Phase 1: Static Checks)** — Deterministically scans for unhashed passwords, unused imports, PII log leaks, and unhandled DB rowcounts.
+2. **Code Review Agent (Phase 2: LLM Analysis)** — AI analyzes the logical flow, security edge cases, and calculates a deterministic score.
+3. **Requirements Validation Agent** — Takes the code findings as truth, cross-references with ADO Work Items, and verifies if business rules and acceptance criteria were actually implemented across the entire call graph.
 
-Both agents publish structured Markdown reports directly into the PR. The entire pipeline runs inside the Azure security
-perimeter — code never reaches external servers.
+Both reviews are published as structured Markdown comments in the PR, all within your Azure security perimeter.
 
-```text
-Developer opens PR → ADO Webhook → FastAPI App → Azure AI Foundry (Llama 3.3)
-                                         │                  │
-                                    ADO REST API  ←─────────┘
-                                         │
-                                  2x Review Reports
-                                  published in PR
+```
+Developer opens PR → ADO Webhook → Orchestrator Pipeline
+                                        ↓
+                                  1. Static Code Analysis + Code Review Agent
+                                        ↓
+                                  2. Requirements Validation Agent (Injects Code Findings)
+                                        ↓
+                                  2x Markdown Review Reports
 ```
 
------
-
-## Key Features & Resilience
-
-- **Dual-Agent Architecture:** Separates concerns between code syntax/security and business logic validation.
-- **Repository Rule Enforcement:** Automatically detects and enforces global architecture rules defined in
-  `.codereview.yml`.
-- **Fair Grading System:** PRs are only blocked (`ACTION REQUIRED`) if they contain `CRITICAL` vulnerabilities, more
-  than 3 `HIGH` severity issues, or drop below a `7/10` security score.
-- **Enterprise-Grade Resilience:** Implements **Exponential Backoff with Jitter** to handle Azure API rate limits (429
-  Too Many Requests) smoothly during massive PRs.
-- **Crash-Proof Parsing:** Uses an advanced Array-String chunking strategy to guarantee 100% JSON compliance from the
-  LLM, preventing parsing crashes on complex code snippets.
-
------
-
-## Example outputs
-
-### 🛡️ Code Review Report
-
-```markdown
-## ScopeReview AI | Code Review Report
 ---
 
-### Overview
-
-| Metric | Value |
-|---|---|
-| Security Score | `█████████░` **9/10** |
-| Recommendation | **PASSED** — *Ready for merge* |
-| Total Issues | 2 |
-
-### Findings Index
-
-| ID | Severity | Category | Location | Title |
-|:---|:---|:---|:---|:---|
-| 01 | `HIGH` | SECURITY | `user_manager.py:94` | Insecure Password Hashing |
-| 02 | `LOW` | QUALITY | `user_manager.py:8` | Unused Import (pprint) |
-```
-
-### 📋 Requirements Validation Report
-
-```markdown
-## ScopeReview AI | Requirements Validation Report
----
-
-### Overview
-
-| Metric | Value |
-|---|---|
-| Overall Verdict | **APPROVED** — *All verifiable requirements are implemented* |
-| Implementation Progress | `##########` **15/15 (100%)** |
-
-### Implemented Requirements
-
-* **WI-7-REQ-06** — Deve existir uma função anonymize_user(user_id) para cumprir o 'Direito ao Esquecimento'
-* **RULE-03** — Every new function declaration must include Python type hints
-  ...
-```
-
------
-
-## Quick start
+## Quick Start
 
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [ngrok](https://ngrok.com/) (to expose localhost to Azure DevOps)
-- Azure account with AI Foundry access
-- Azure DevOps repository
+- [ngrok](https://ngrok.com/) — to expose your local app to Azure DevOps
+- Azure account with [AI Foundry](https://ai.azure.com/) access
+- Azure DevOps project with Git repositories
 
-### 1. Clone and configure
+### 1️- Clone & Setup
 
 ```bash
-git clone [https://github.com/](https://github.com/)<your-user>/poc-code-review.git
+git clone https://github.com/your-org/poc-code-review.git
 cd poc-code-review
 ```
 
-Create a `.env` file in the project root:
+Create `.env` file:
 
 ```env
-AZURE_ENDPOINT=https://<resource>[.services.ai.azure.com/models/chat/completions?api-version=2024-05-01-preview](https://.services.ai.azure.com/models/chat/completions?api-version=2024-05-01-preview)
+# Azure AI Foundry credentials
+AZURE_ENDPOINT=https://<resource>.services.ai.azure.com/models/chat/completions?api-version=2024-05-01-preview
 AZURE_MODEL=Llama-3.3-70B-Instruct
 AZURE_API_KEY=<your-api-key>
 
-ADO_ORGANIZATION=<your-org-id>
-ADO_PAT=<your-personal-access-token>
+# Azure DevOps credentials
+ADO_ORGANIZATION=<your-org-name>
+ADO_PAT=<personal-access-token>
 ```
 
-### 2. Run
+> 💡 Get your API keys from [Azure AI Foundry](https://ai.azure.com) and Azure DevOps Personal Access Tokens.
+
+### 2️- Run Locally
 
 ```bash
 docker compose up --build
 ```
 
-Verify the system is running:
+Verify it's working:
 
 ```bash
-curl http://localhost:8000/health/code-review
-# {"status":"ok","agent":"Code Review Agent","model":"Llama-3.3-70B-Instruct"}
+curl http://localhost:8000/health
+# {"status":"ok","system":"ScopeReview AI","version":"1.0.0","agents":{"code_review":...}}
 ```
 
-### 3. Expose to the internet
+### 3️- Expose to Azure DevOps
+
+In a new terminal:
 
 ```bash
 ngrok http 8000
-# Forwarding  [https://xxxx.ngrok-free.app](https://xxxx.ngrok-free.app) -> http://localhost:8000
+# Forwarding  https://xxxx-xxxx-xxxx.ngrok-free.app -> http://localhost:8000
 ```
 
-### 4. Configure the webhooks in Azure DevOps
+### 4️- Configure Webhooks in Azure DevOps
 
-```text
-ADO Project → Project Settings → Service Hooks → Create 2 subscriptions
-  Trigger 1:  Pull request created/updated -> URL: https://<your-ngrok-url>/webhook
-  Trigger 2:  Pull request created/updated -> URL: https://<your-ngrok-url>/webhook/requirements
+Navigate to **Project Settings → Service Hooks** and create **ONE** subscription:
+
+**Subscription — Orchestrator Pipeline**
+- Event: "Pull request created/updated"
+- URL: `https://<your-ngrok-url>/webhook/orchestrate`
+
+*(The orchestrator will automatically trigger both the Code Review and Requirements Validation agents sequentially).*
+
+---
+
+## Project Structure
+
+```
+src/
+├── main.py                       # FastAPI app & router mounting
+├── code_review_agent.py          # Security & quality analysis agent
+├── requirements_review_agent.py  # Business logic validation agent
+└── shared_state.py               # Thread-safe PR deduplication cache
+
+docker-compose.yml               # Container orchestration
+Dockerfile                       # Python 3.12 + dependencies
+requirements.txt                 # Python packages
+.env                             # Secrets (git-ignored)
+.codereview.yml                  # (Optional) Global repo rules
 ```
 
------
+---
 
-## Project structure
+## Example: What the Reports Look Like
 
-```text
-poc-code-review/
-├── src/
-│   ├── main.py                        # FastAPI entry point & router mounting
-│   ├── code_review_agent.py           # Agent 1: Security & Quality
-│   └── requirements_review_agent.py   # Agent 2: Business Logic & Work Items
-├── .codereview.yml               # (Optional) Global repo rules to enforce
-├── docker-compose.yml            # container orchestration
-├── Dockerfile                    # container image definition
-├── requirements.txt              # Python dependencies
-├── .env                          # secrets (git-ignored)
-└── README.md
+When a PR is analyzed, you'll see **two comments** in the PR thread:
+
+### Code Review Report
+
+```markdown
+## ScopeReview AI | Code Review Report
+
+| Security Score | `████████░░` **8.5/10** |
+| Recommendation | **PASSED** — Ready for merge |
+
+### Issues Requiring Attention
+
+**1 · 🟠 HIGH · Security · `user_manager.py:275`**
+
+```python
+        user.password = md5(password.encode()).hexdigest()
+```
+> **Justification:** MD5 is cryptographically broken and should not be used for passwords.
+> **Suggestion:** Use `bcrypt` or `Argon2` instead.
 ```
 
------
+### Requirements Validation Report
 
-## Cost-Efficiency (Based on Real Telemetry)
+```markdown
+## ScopeReview AI | Requirements Validation Report
 
-Running this dual-agent system is astronomically more cost-effective than commercial alternatives. Based on real
-telemetry data from Azure AI Foundry (Llama-3.3-70B-Instruct), the average cost per AI request is **~€0.00045** (
-averaging 886 tokens/request).
+| Overall Verdict | **NEEDS WORK** — Some requirements failed |
+| Progress        | `#######░░░` **7/10 (70%)** |
 
-For a team of 5 developers submitting **200 PRs/month** — assuming an average of 10 AI requests per PR to safely cover
-both code chunking and requirements validation — the total running cost is estimated at **under €1.50/month**.
+### ⚠️ Issues Requiring Attention
 
-| Solution                       | Monthly cost (5 devs, 200 PRs) |
-|--------------------------------|--------------------------------|
-| **ScopeReview AI (Llama 70B)** | **~ € 1.50**                   |
-| CodeRabbit Pro                 | ~ € 110.00 ($120)              |
-| GitHub Copilot                 | ~ € 87.00 ($95)                |
+**❌ WI-12-AC-04** · Partial · `user_manager.py:163`
 
-> *Note: ScopeReview AI cost projection is derived from baseline PoC testing where 265 requests (183.7k input tokens /
-51.1k output tokens) generated a total billing of exactly €0.12.*
------
+```python
+        print("Data exported successfully.") 
+```
+> **Missing Detail:** The export_user_data method uses print instead of log.info on line 163. A concrete fix example would be to replace print with log.info.
+```
 
-## Known limitations
+---
 
-- **No inline line-level comments** — reviews are currently published as a single aggregated PR comment thread, not
-  attached to individual diff lines.
-- **Diff Context Isolation** — The agent currently pulls the full file (up to max lines) rather than just the strictly
-  modified diff hunks, which may result in reviewing untouched code.
+## 🛠Configuration Options
 
------
+### Environment Variables
 
-## Documentation
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_FILES` | `5` | Maximum files to analyze per PR |
+| `MAX_LINES` | `400` | Maximum lines per file |
+| `MAX_TENTATIVAS` | `3` | Retry attempts on API errors |
+| `MAX_HIGH_BLOCK`| `3` | Number of HIGH findings allowed before blocking PR |
+| `DEDUP_SECONDS` | `300` | Duplicate PR detection window (seconds) |
+| `WEBHOOK_SECRET`| `""` | Shared secret for webhook HTTP Basic Auth (optional) |
+| `MAX_TOKEN_BUDGET`| `50000` | Limit on Azure AI tokens consumed per PR |
 
-| Page                                          | Description                                   |
-|-----------------------------------------------|-----------------------------------------------|
-| [Home](../../wiki)                            | Project overview and navigation               |
-| [Setup](../../wiki/Setup)                     | Step-by-step installation and configuration   |
-| [Architecture](../../wiki/Architecture)       | Technical decisions and system design         |
-| [Development Log](../../wiki/Development-Log) | Problems encountered and how they were solved |
-| [Model Selection](../../wiki/Model-Selection) | LLM comparison and cost analysis              |
-| [Evaluation](../../wiki/Evaluation)           | Test results and detection metrics            |
+### Global Repository Rules (`.codereview.yml`)
 
------
+Create `.codereview.yml` in your repo root to enforce organization-wide rules:
 
-## Academic context
+```yaml
+# Example: Enforce type hints and docstrings
+security_rules:
+  - "All functions must include type hints"
+  - "All public functions must have docstrings"
 
-This project was developed as a Proof of Concept during a curricular internship at [DevScope](https://devscope.net), as
-part of the BSc in Computer Engineering at ISEP — Instituto Superior de Engenharia do Porto.
+code_quality:
+  - "Avoid hardcoding secrets; use environment variables"
+  - "Maximum cyclomatic complexity: 10"
+```
 
-**Internship year:** 2025/2026  
+These rules will be checked on every PR.
+
+---
+
+## Deployment
+
+### Production Deployment
+
+For production, replace ngrok with:
+- **Azure App Service** — Host the FastAPI app natively
+- **Azure Container Instances** — Run containerized
+- **Kubernetes** — Use `kubectl` for orchestration
+
+Update your Azure DevOps webhooks to point to the production URL.
+
+### Health Checks
+
+```bash
+# Overall system health (silent internal logging)
+curl https://<your-domain>/health
+```
+
+---
+
+## Performance & Cost
+
+**Cost per PR:** ~€0.003 (using Llama-3.3-70B-Instruct)
+
+For a team of 5 developers submitting **200 PRs/month**:
+- **ScopeReview AI:** ~€1.20/month
+- **CodeRabbit Pro:** ~€110/month  
+- **GitHub Copilot:** ~€87/month
+
+---
+
+## Troubleshooting
+
+### PR is not being analyzed
+
+✅ Check webhook subscription is active in Azure DevOps  
+✅ Verify ngrok tunnel is running and configured correctly  
+✅ Check logs: `docker logs poc-code-review-app-1`
+
+### Rate limit errors (429)
+
+The system automatically retries with exponential backoff. If still failing:
+- Reduce `MAX_FILES` or `MAX_LINES`
+- Check your Azure AI Foundry quota
+
+### JSON parsing errors
+
+This is handled automatically. If persistent, check:
+- Your `.env` file has correct `AZURE_ENDPOINT` and `AZURE_API_KEY`
+- Model name matches Azure AI Foundry deployment
+
+---
+
+## Full Documentation
+
+For detailed architecture, setup troubleshooting, and evaluation results, see the [Wiki](../../wiki):
+
+- **[Architecture](../../wiki/Architecture)** — System design and agent interaction
+- **[Setup Guide](../../wiki/Setup)** — Step-by-step configuration
+- **[Development Log](../../wiki/Development-Log)** — Known issues and solutions
+- **[Model Evaluation](../../wiki/Evaluation)** — Test results and metrics
+
+---
+
+## Contributing
+
+This is a PoC developed during a BSc internship. For issues or suggestions:
+1. Open an issue in this repository
+2. Contact the project maintainers at DevScope
+
+---
+
+## License
+
+MIT — See [LICENSE](LICENSE) file.
+
+---
+
+## Academic Context
+
+**Project:** ScopeReview AI — Automated PR Analysis for Azure DevOps  
+**Year:** 2025/2026  
 **Student:** Bruno Teixeira  
-**Academic supervisor:** Prof. Nuno Morgado (ISEP)  
-**Company supervisor:** Eng. David Mota (DevScope)
+**Institution:** ISEP — Instituto Superior de Engenharia do Porto  
+**Company:** [DevScope](https://devscope.net)  
+**Academic Supervisor:** Prof. Nuno Morgado (ISEP)  
+**Company Supervisor:** Eng. David Mota (DevScope)
+
+---
+
+**Questions?** Check the [Wiki](../../wiki) or open an issue. 

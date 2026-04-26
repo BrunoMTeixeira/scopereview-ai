@@ -28,21 +28,18 @@ import logging
 import os
 import re
 import time
-import threading
+import random
 from collections import Counter
 from typing import Optional, List, Dict
 
 import requests
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, Request, HTTPException
+from pydantic import BaseModel
 
 load_dotenv()
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
 log = logging.getLogger("ScopeReviewAI.Requirements")
 
 
@@ -62,13 +59,18 @@ AZURE_MODEL = os.getenv("AZURE_MODEL", "Llama-3.3-70B-Instruct")
 AZURE_API_KEY = _obter_env_obrigatoria("AZURE_API_KEY")
 ADO_ORGANIZATION = _obter_env_obrigatoria("ADO_ORGANIZATION")
 ADO_PAT = _obter_env_obrigatoria("ADO_PAT")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+
+# Validate HTTPS for credential safety
+if not AZURE_ENDPOINT.startswith("https://"):
+    raise EnvironmentError("AZURE_ENDPOINT must use HTTPS to protect API keys in transit.")
 
 MAX_FILES = int(os.getenv("MAX_FILES", "5"))
 MAX_LINES = int(os.getenv("MAX_LINES", "400"))
-MAX_TOKENS = 8000
+MAX_TOKENS = 16000
 TIMEOUT = 180
 MAX_TENTATIVAS = 3
-DEDUP_SECONDS = 300
+ADO_REQUEST_TIMEOUT = 20
 
 REQUIREMENTS_FILE_CANDIDATES = [
     "/.requirements.yml",
@@ -99,38 +101,38 @@ WI_FIELDS = [
 ]
 
 # ─── State ────────────────────────────────────────────────────────────────────
-_prs_processados: Dict[int, float] = {}
-_prs_lock = threading.Lock()
+import shared_state
 
 # ─── Router ───────────────────────────────────────────────────────────────────
 router = APIRouter(tags=["Requirements Review"])
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Class
+# ══════════════════════════════════════════════════════════════════════════════
+
+class RequirementsResult(BaseModel):
+    work_items_analysed: List[dict] = []
+    requirements: List[dict] = []
+    overall_verdict: str
+    verdict_reason: str
+    implementation_summary: str = ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS — AZURE DEVOPS
 # ══════════════════════════════════════════════════════════════════════════════
 
+_ADO_AUTH_HEADER = f"Basic {base64.b64encode(f':{ADO_PAT}'.encode()).decode()}"
+
+
 def _ado_headers() -> dict:
-    token = base64.b64encode(f":{ADO_PAT}".encode()).decode()
-    return {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+    return {"Authorization": _ADO_AUTH_HEADER, "Content-Type": "application/json"}
 
 
 def _linguagem(caminho: str) -> str:
     ext = caminho.rsplit(".", 1)[-1].lower() if "." in caminho else ""
     return LANG_MAP.get(ext, "")
 
-
-def _verificar_duplicado(pr_id: int) -> bool:
-    """Thread-safe duplicate check for the requirements agent."""
-    agora = time.time()
-    with _prs_lock:
-        expiradas = [k for k, v in _prs_processados.items() if agora - v > DEDUP_SECONDS]
-        for k in expiradas:
-            del _prs_processados[k]
-        if (agora - _prs_processados.get(pr_id, 0)) < DEDUP_SECONDS:
-            return True
-        _prs_processados[pr_id] = agora
-        return False
 
 
 def _limpar_html(texto: str) -> str:
@@ -155,7 +157,7 @@ def obter_detalhes_pr(repo_id: str, pr_id: int, project: str) -> dict:
         f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}?api-version=7.1"
     )
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         return {
@@ -184,7 +186,7 @@ def obter_ids_work_items_pr(repo_id: str, pr_id: int, project: str) -> List[int]
         f"/workitems?api-version=7.1"
     )
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
         resp.raise_for_status()
         items = resp.json().get("value", [])
         ids = [item["id"] for item in items if "id" in item]
@@ -207,7 +209,7 @@ def obter_detalhes_work_item(wi_id: int) -> Optional[dict]:
         f"?fields={fields_param}&api-version=7.1"
     )
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
         resp.raise_for_status()
         fields = resp.json().get("fields", {})
         return {
@@ -237,7 +239,7 @@ def obter_comentarios_work_item(wi_id: int) -> List[str]:
     )
     comentarios = []
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
 
         # --- PROTEÇÃO ADICIONADA AQUI ---
         if resp.status_code == 404:
@@ -264,6 +266,9 @@ def obter_todos_work_items(repo_id: str, pr_id: int, project: str) -> List[dict]
     for wi_id in ids:
         detalhes = obter_detalhes_work_item(wi_id)
         if detalhes:
+            if detalhes.get("state") in ("Closed", "Removed", "Cancelled"):
+                log.info("Work Item #%s skipped — state is '%s'", wi_id, detalhes["state"])
+                continue
             detalhes["comments"] = obter_comentarios_work_item(wi_id)
             work_items.append(detalhes)
             # --- MUDANÇA DO %d PARA %s FEITA AQUI ---
@@ -285,10 +290,17 @@ def obter_ficheiro_repositorio(repo_id: str, project: str,
         f"&versionDescriptor.versionType=commit&api-version=7.1"
     )
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=15)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
+
+        # 404 is expected — file simply doesn't exist in this repo
+        if resp.status_code == 404:
+            return ""
+
         resp.raise_for_status()
         return resp.text.strip()
-    except Exception:
+
+    except requests.RequestException as exc:
+        log.warning("Failed to read repository file %s: %s", path, exc)
         return ""
 
 
@@ -314,7 +326,7 @@ def obter_conteudo_ficheiro(repo_id: str, project: str,
         f"&versionDescriptor.versionType=commit&api-version=7.1"
     )
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
         resp.raise_for_status()
         linhas = resp.text.splitlines()[:MAX_LINES]
         return "\n".join([f"{i + 1:>4} | {l}" for i, l in enumerate(linhas)])
@@ -332,17 +344,25 @@ def obter_ficheiros_alterados(repo_id: str, pr_id: int,
     )
     mapa = {}
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
         resp.raise_for_status()
-        iter_id = resp.json()["value"][-1]["id"]
+        iterations = resp.json().get("value", [])
+        if not iterations:
+            log.warning("No iterations found for PR #%s", pr_id)
+            return {}
+        iter_id = iterations[-1]["id"]
         url_changes = (
             f"https://dev.azure.com/{ADO_ORGANIZATION}/{project}"
             f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}"
             f"/iterations/{iter_id}/changes?api-version=7.1"
         )
-        resp_changes = requests.get(url_changes, headers=_ado_headers(), timeout=20)
+        resp_changes = requests.get(url_changes, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
+        resp_changes.raise_for_status()
         changes = resp_changes.json().get("changeEntries", [])
         for change in changes[:MAX_FILES]:
+            # Skip rename-only changes (no code modification)
+            if change.get("changeType") in ("rename",):
+                continue
             path = change.get("item", {}).get("path", "")
             if path and not any(path.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
                 conteudo = obter_conteudo_ficheiro(repo_id, project, path, commit_sha)
@@ -367,7 +387,7 @@ def publicar_comentario(repo_id: str, pr_id: int, project: str, texto: str):
         "status": 1,
     }
     try:
-        requests.post(url, headers=_ado_headers(), json=payload, timeout=20).raise_for_status()
+        requests.post(url, headers=_ado_headers(), json=payload, timeout=ADO_REQUEST_TIMEOUT).raise_for_status()
         log.info("Requirements report published in PR #%s", pr_id)
     except requests.RequestException as exc:
         log.error("Failed to publish requirements report: %s", exc)
@@ -376,6 +396,15 @@ def publicar_comentario(repo_id: str, pr_id: int, project: str, texto: str):
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS — AI ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _sanitize_json(raw: str) -> str:
+    """Fix common LLM JSON issues: invalid escape sequences and trailing commas."""
+    import re
+    # Fix invalid escape sequences (e.g. \d, \s, \w) — only valid JSON escapes are: \" \\ \/ \b \f \n \r \t \uXXXX
+    fixed = re.sub(r'\\(?!["\\\//bfnrtu])', r'\\\\', raw)
+    # Remove trailing commas before } or ]
+    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    return fixed
 
 def _formatar_work_items_para_prompt(work_items: List[dict]) -> str:
     """Formats Work Item data as structured text for the LLM prompt."""
@@ -396,14 +425,15 @@ def _formatar_work_items_para_prompt(work_items: List[dict]) -> str:
             secao += ["", f"Tags: {wi['tags']}"]
         if wi.get("comments"):
             secao += ["", "Team Comments:"]
-            for c in wi["comments"][:5]:
+            comentarios_ordenados = sorted(wi.get("comments", []), key=len, reverse=True)
+            for c in comentarios_ordenados[:5]:
                 secao.append(f"  • {c}")
         secoes.append("\n".join(secao))
     return "\n\n".join(secoes)
 
 
 def _construir_prompt(pr_info: dict, work_items: List[dict],
-                      regras_repo: str, mapa_ficheiros: Dict[str, str]) -> str:
+                      regras_repo: str, mapa_ficheiros: Dict[str, str], injected_findings: list = None) -> str:
     """Builds the full requirements validation prompt."""
     wi_section = _formatar_work_items_para_prompt(work_items)
     regras_section = f"\n{regras_repo}" if regras_repo else "(No repository rules file found)"
@@ -412,6 +442,22 @@ def _construir_prompt(pr_info: dict, work_items: List[dict],
         for path, content in mapa_ficheiros.items()
     ]) if mapa_ficheiros else "(No code changes provided)"
     pr_desc = pr_info.get("description", "") or "(No PR description provided)"
+
+    if injected_findings:
+        findings_str = "\n".join([
+            f"- [{f.get('severity', '').upper()}] File {f.get('file')}, Line {f.get('line')}: {f.get('title')} - {f.get('description')}"
+            for f in injected_findings
+        ])
+        code_review_context = f"""
+=== CODE REVIEW STATIC FINDINGS ===
+The Code Review agent has already analyzed this PR and found the following issues.
+CRITICAL: You MUST use these findings as source of truth for code quality Non-Functional Requirements.
+For example, if the Code Review found "Unused imports", you CANNOT mark a "No Unused Imports" requirement as IMPLEMENTED.
+
+{findings_str}
+"""
+    else:
+        code_review_context = ""
 
     return f"""You are a Requirements Validation Agent for a software development team.
 Your task is to determine whether the code changes in this Pull Request correctly
@@ -426,7 +472,7 @@ implement the business requirements defined in the linked Work Items.
 (Standing rules that apply to ALL pull requests in this repository.)
 
 {regras_section}
-
+{code_review_context}
 === PR DESCRIPTION (fallback context) ===
 PR Title: {pr_info.get('title', 'N/A')}
 Author: {pr_info.get('author', 'N/A')}
@@ -441,11 +487,13 @@ Branch: {pr_info.get('source_branch', 'N/A')}
 === YOUR TASK ===
 
 Step 1 — Extract ALL requirements from:
-  1. Work Item Acceptance Criteria (if available)
-  2. Work Item Description (TREAT THIS AS THE PRIMARY SOURCE OF REQUIREMENTS if Acceptance Criteria is missing)
+  1. Work Item Acceptance Criteria (PRIMARY source — each numbered AC is a SEPARATE requirement)
+  2. Work Item Description (fallback if no Acceptance Criteria — parse ALL items from free text, numbered lists, bullet points, or meeting notes)
   3. Team Comments
   4. Repository Business Rules (if relevant to this change)
-  Assign IDs: WI-{{id}}-REQ-{{n}} for requirements, RULE-{{n}} for repo rules.
+  CRITICAL: Extract EVERY individually identifiable requirement. If the AC contains 15 items (AC 1..AC 15) plus Non-Functional requirements (NF-1..NF-7), you MUST output ALL of them as separate entries. Do NOT summarize, skip, or group multiple items.
+  Include both functional ACs and non-functional/quality requirements (e.g. code quality, logging, type hints, validation).
+  Assign IDs: WI-{{id}}-AC-{{n}} for Acceptance Criteria, WI-{{id}}-NF-{{n}} for Non-Functional, RULE-{{n}} for repo rules.
 
 Step 2 — For each requirement, assign ONE status:
   IMPLEMENTED   — clearly and correctly satisfied in the changed code
@@ -454,6 +502,13 @@ Step 2 — For each requirement, assign ONE status:
   UNVERIFIABLE  — cannot be determined from static analysis alone
                   (runtime behaviour, external systems, timing constraints)
   STATUS ASSIGNMENT  — Be pragmatic. If a requirement is 90% implemented and functional, mark it as IMPLEMENTED even if small non-functional details (like type hints) are missing. Only use PARTIAL/MISSING for real functional gaps.
+  CRITICAL: When evaluating IMPLEMENTED status, you MUST verify ALL code paths, not just the happy path. If a requirement says "all failures must be logged" and there is ANY code path where a failure is NOT logged, the status is PARTIAL.
+  CRITICAL: When validating if an action/event is tracked or implemented, check the ENTIRE CALL GRAPH, not just inside a single helper method. It counts as IMPLEMENTED if other methods invoke the required action.
+  - Mark any requirement from Acceptance Criteria as MUST (highest priority).
+  - Mark requirements from Description as SHOULD.
+  - Mark requirements from comments or repo rules as COULD.
+  Add a "priority" field: "MUST"|"SHOULD"|"COULD" to each requirement.
+  The overall_verdict must be NEEDS_WORK if ANY MUST requirement is MISSING or PARTIAL.
 
 Step 3 — Overall verdict:
   APPROVED        — all verifiable requirements are IMPLEMENTED
@@ -462,11 +517,31 @@ Step 3 — Overall verdict:
   NO_REQUIREMENTS — no requirements found in any source
 
 STRICT RULES:
-- Reference exact line numbers and file names in your evidence.
+- For evidence, provide the EXACT code snippet causing the problem (or showing the implementation).
+- Provide the file name and line number in separate JSON fields. "evidence_code" MUST be an array of strings.
+- For PARTIAL requirements, your `missing_detail` MUST include:
+  1. Which specific function(s) or line(s) violate the requirement
+  2. What specifically is missing or wrong
+  3. A concrete fix example
+  BAD: "Logging is not consistent across the code"
+  GOOD: "export_user_data() uses print() on line 163 instead of log.info()."
 - Do NOT comment on code quality or security — that is a separate agent.
 - Do NOT invent requirements not in the sources above.
 - If a Work Item has no Acceptance Criteria, say so explicitly.
 - For UNVERIFIABLE, always provide a concrete testing hint.
+
+TESTING EXPECTATIONS:
+- If requirement says "implement feature X", code must have:
+  • Unit tests (pytest, jest, etc.)
+  • Integration tests if X interacts with external systems
+  Missing tests → Mark as PARTIAL, not IMPLEMENTED
+  
+CONFLICT RESOLUTION:
+- If 2 Work Items have contradicting requirements:
+  • Reference the conflict explicitly in verdict_reason
+  • Mark both as UNVERIFIABLE with explanation
+  
+
 
 Respond ONLY with valid JSON — no markdown, no extra text:
 {{
@@ -475,7 +550,8 @@ Respond ONLY with valid JSON — no markdown, no extra text:
       "id": <int>,
       "title": "<str>",
       "type": "<str>",
-      "has_acceptance_criteria": <bool>
+      "has_acceptance_criteria": <bool>,
+      "priority": "MUST"|"SHOULD"|"COULD"
     }}
   ],
   "requirements": [
@@ -485,7 +561,9 @@ Respond ONLY with valid JSON — no markdown, no extra text:
       "source": "acceptance_criteria"|"description"|"wi_comment"|"repository_rule"|"pr_description",
       "description": "<full requirement as stated>",
       "status": "IMPLEMENTED"|"PARTIAL"|"MISSING"|"UNVERIFIABLE",
-      "evidence": "<file and line number(s) supporting this verdict>",
+      "evidence_file": "<file name>",
+      "evidence_line": <int>,
+      "evidence_code": ["line 1 of code", "line 2 of code"],
       "missing_detail": "<what is absent — null if IMPLEMENTED>",
       "manual_test_hint": "<how to test at runtime — null unless UNVERIFIABLE>"
     }}
@@ -496,9 +574,11 @@ Respond ONLY with valid JSON — no markdown, no extra text:
 }}"""
 
 
-def _chamar_ia(prompt: str, tentativa: int = 1) -> Optional[dict]:
+
+def _chamar_ia(prompt: str) -> Optional[dict]:
     """Sends the requirements validation prompt to Azure AI Foundry."""
-    start_time = time.time()
+    from pydantic import ValidationError
+
     headers = {"api-key": AZURE_API_KEY, "Content-Type": "application/json"}
     payload = {
         "model": AZURE_MODEL,
@@ -506,9 +586,8 @@ def _chamar_ia(prompt: str, tentativa: int = 1) -> Optional[dict]:
             {
                 "role": "system",
                 "content": (
-                    "You are a Requirements Validation Agent. "
-                    "Verify that Pull Request implementations match business requirements. "
-                    "Be precise and structured. Respond ONLY in valid JSON."
+                    "You are a precise Requirements Validation Agent. "
+                    "Respond ONLY in valid JSON."
                 ),
             },
             {"role": "user", "content": prompt},
@@ -516,183 +595,294 @@ def _chamar_ia(prompt: str, tentativa: int = 1) -> Optional[dict]:
         "temperature": 0.0,
         "max_tokens": MAX_TOKENS,
     }
-    try:
-        resp = requests.post(AZURE_ENDPOINT, headers=headers, json=payload, timeout=TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        usage = data.get("usage", {})
-        elapsed = time.time() - start_time
-        p_tokens = usage.get("prompt_tokens", 0)
-        c_tokens = usage.get("completion_tokens", 0)
-        log.info(
-            "[REQUIREMENTS] Done — %.2fs | %d tokens (%dP / %dC)",
-            elapsed, p_tokens + c_tokens, p_tokens, c_tokens,
-        )
-        raw = data["choices"][0]["message"]["content"].strip()
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start == -1 or end == -1:
-            log.error("No JSON in AI response")
-            return None
-        resultado = json.loads(raw[start:end + 1], strict=False)
-        resultado["_metrics"] = {"time": elapsed, "tokens": p_tokens + c_tokens}
-        return resultado
-    except requests.RequestException as exc:
-        if tentativa < MAX_TENTATIVAS:
-            time.sleep(5 * tentativa)
-            return _chamar_ia(prompt, tentativa + 1)
-        log.error("Requirements AI failed after %d attempts: %s", MAX_TENTATIVAS, exc)
-        return None
+
+    for tentativa in range(1, MAX_TENTATIVAS + 1):
+        start_time = time.time()
+        try:
+            resp = requests.post(AZURE_ENDPOINT, headers=headers, json=payload, timeout=TIMEOUT)
+            resp.raise_for_status()
+
+            data = resp.json()
+            usage = data.get("usage", {})
+            elapsed = time.time() - start_time
+            p_tokens = usage.get("prompt_tokens", 0)
+            c_tokens = usage.get("completion_tokens", 0)
+            log.info(
+                "[REQUIREMENTS] Done — %.2fs | %d tokens (%dP / %dC)",
+                elapsed, p_tokens + c_tokens, p_tokens, c_tokens,
+            )
+
+            raw = data["choices"][0]["message"]["content"].strip()
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1:
+                log.error("No JSON found in AI response")
+                return None
+
+            try:
+                sanitized = _sanitize_json(raw[start:end + 1])
+                parsed = json.loads(sanitized)
+                resultado = RequirementsResult(**parsed)
+            except (json.JSONDecodeError, ValidationError) as parse_err:
+                log.error("Failed to parse/validate AI response: %s", parse_err)
+                return None
+
+            resultado_dict = resultado.model_dump()
+            resultado_dict["_metrics"] = {"time": elapsed, "tokens": p_tokens + c_tokens}
+
+            return resultado_dict
+
+        except requests.RequestException as exc:
+            if tentativa >= MAX_TENTATIVAS:
+                log.error("Requirements AI failed after %d attempts: %s", MAX_TENTATIVAS, exc)
+                return None
+
+            espera = 0
+
+            # 1. Respect the Retry-After header (REST best practice)
+            if hasattr(exc, 'response') and exc.response is not None:
+                if exc.response.status_code == 429:
+                    retry_header = exc.response.headers.get("Retry-After")
+                    if retry_header and retry_header.isdigit():
+                        espera = int(retry_header)
+
+            # 2. Exponential Backoff + Jitter
+            if espera == 0:
+                base_delay = 2 ** (tentativa + 1)
+                jitter = random.uniform(0, base_delay * 0.5)
+                espera = base_delay + jitter
+
+            log.warning(
+                "API failure (possible Rate Limit). Backoff: waiting %.2fs before attempt %d/%d...",
+                espera, tentativa + 1, MAX_TENTATIVAS
+            )
+            time.sleep(espera)
+
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # COMMENT FORMATTING
 # ══════════════════════════════════════════════════════════════════════════════
 
-STATUS_BADGE = {"IMPLEMENTED": "PASS", "PARTIAL": "PARTIAL", "MISSING": "FAIL", "UNVERIFIABLE": "MANUAL TEST"}
+STATUS_EMOJI = {
+    "IMPLEMENTED":  "✅",
+    "PARTIAL":      "⚠️",
+    "MISSING":      "❌",
+    "UNVERIFIABLE": "🔍",
+}
+
+STATUS_LABEL = {
+    "IMPLEMENTED":  "Implemented",
+    "PARTIAL":      "Partial",
+    "MISSING":      "Missing",
+    "UNVERIFIABLE": "Needs testing",
+}
+
 STATUS_ORDER = {"MISSING": 0, "PARTIAL": 1, "UNVERIFIABLE": 2, "IMPLEMENTED": 3}
+
 SOURCE_LABEL = {
     "acceptance_criteria": "Acceptance Criteria",
-    "description": "WI Description",
-    "wi_comment": "WI Comment",
-    "repository_rule": "Repository Rule",
-    "pr_description": "PR Description",
+    "description":         "WI Description",
+    "wi_comment":          "WI Comment",
+    "repository_rule":     "Repository Rule",
+    "pr_description":      "PR Description",
+}
+
+PRIORITY_LABEL = {
+    "MUST":   "Must",
+    "SHOULD": "Should",
+    "COULD":  "Could",
 }
 
 
-def _barra_implementacao(requisitos: List[dict]) -> str:
+def _progress_bar(requisitos: List[dict]) -> str:
+    """Renders a 10-step progress gauge for requirement completion."""
     total = len(requisitos)
-    implementados = sum(1 for r in requisitos if r.get("status") == "IMPLEMENTED")
+    done  = sum(1 for r in requisitos if r.get("status") == "IMPLEMENTED")
     if total == 0:
-        return "N/A"
-    pct = round(implementados / total * 100)
-    filled = round(implementados / total * 10)
-    return f"`{'#' * filled}{'-' * (10 - filled)}` {implementados}/{total} ({pct}%)"
+        return "—"
+    pct    = round(done / total * 100)
+    filled = round(done / total * 10)
+    bar    = f"`{'█' * filled}{'░' * (10 - filled)}`"
+    return f"{bar}  **{done} / {total}**  ({pct}%)"
 
 
 def formatar_comentario(resultado: dict, pr_info: dict, work_items: List[dict]) -> str:
-    """Formats the requirements validation result as a Markdown PR comment."""
-    requisitos = resultado.get("requirements", [])
-    veredicto = resultado.get("overall_verdict", "UNVERIFIABLE")
-    sumario = resultado.get("implementation_summary", "")
-    wi_info = resultado.get("work_items_analysed", [])
-    metrics = resultado.get("_metrics", {})
+    """Formats requirements validation results as a modern, minimalist Markdown PR comment."""
+
+
+    requisitos  = resultado.get("requirements", [])
+    veredicto   = resultado.get("overall_verdict", "UNVERIFIABLE")
+    sumario     = resultado.get("implementation_summary", "")
+    wi_info     = resultado.get("work_items_analysed", [])
+    metrics     = resultado.get("_metrics", {})
 
     requisitos_ord = sorted(
         requisitos,
         key=lambda r: STATUS_ORDER.get(r.get("status", "MISSING"), 99),
     )
 
+    # ── verdict ───────────────────────────────────────────────────────────────
     if veredicto == "APPROVED":
-        verdict_text = "APPROVED — All verifiable requirements are implemented"
+        verdict = "✅  Approved — all verifiable requirements are implemented."
     elif veredicto == "NO_REQUIREMENTS":
-        verdict_text = "NO REQUIREMENTS FOUND — Link a Work Item with Acceptance Criteria to this PR"
+        verdict = "📭  No requirements found — link a Work Item with Acceptance Criteria to this PR."
     elif veredicto == "UNVERIFIABLE":
-        verdict_text = "MANUAL REVIEW REQUIRED — Requirements need runtime verification"
+        verdict = "🔍  Manual review required — requirements need runtime verification."
     else:
-        verdict_text = "NEEDS WORK — One or more requirements are missing or incomplete"
+        verdict = "⛔  Changes needed — one or more requirements are missing or incomplete."
 
     contagem = Counter(r.get("status") for r in requisitos)
 
+    # ── header ────────────────────────────────────────────────────────────────
     lines = [
-        "## ScopeReview AI | Requirements Validation Report",
-        "---",
-        "### Overview",
+        "## 📋  Requirements Validation",
         "",
-        "| Metric | Value |",
-        "|---|---|",
-        f"| Overall Verdict | **{verdict_text}** |",
-        f"| Requirements Found | {len(requisitos)} |",
-        f"| Implementation Progress | {_barra_implementacao(requisitos)} |",
-        f"| Implemented | {contagem.get('IMPLEMENTED', 0)} |",
-        f"| Partial | {contagem.get('PARTIAL', 0)} |",
-        f"| Missing | {contagem.get('MISSING', 0)} |",
-        f"| Needs Manual Testing | {contagem.get('UNVERIFIABLE', 0)} |",
-        f"| PR Author | {pr_info.get('author', 'N/A')} |",
-        f"| Source Branch | `{pr_info.get('source_branch', 'N/A')}` |",
+        f"> **ScopeReview AI**  ·  `{AZURE_MODEL}`  ·  Requirements analysis",
+        "",
+        "---",
+        "",
+        "| | |",
+        "|:--|:--|",
+        f"| **Verdict** | {verdict} |",
+        f"| **Author** | {pr_info.get('author', '—')} |",
+        f"| **Branch** | `{pr_info.get('source_branch', '—')}` |",
+        f"| **Progress** | {_progress_bar(requisitos)} |",
+        "",
+        "| ✅ Implemented | ⚠️ Partial | ❌ Missing | 🔍 Needs Testing |",
+        "|:--:|:--:|:--:|:--:|",
+        f"| {contagem.get('IMPLEMENTED', 0)} | {contagem.get('PARTIAL', 0)} | {contagem.get('MISSING', 0)} | {contagem.get('UNVERIFIABLE', 0)} |",
         "",
     ]
 
-    if wi_info:
-        lines += ["---", "", "### Linked Work Items", "", "| ID | Type | Title | Has AC |", "|---|---|---|---|"]
-        for wi in wi_info:
-            has_ac = "Yes" if wi.get("has_acceptance_criteria") else "No AC defined"
-            lines.append(f"| #{wi.get('id')} | {wi.get('type', '?')} | {wi.get('title', '')} | {has_ac} |")
-        lines.append("")
-
     if sumario:
-        lines += ["---", "", "### Implementation Summary", "", f"> {sumario}", ""]
+        lines += [f"> {sumario}", ""]
 
+    lines += ["---", ""]
+
+    # ── linked work items ─────────────────────────────────────────────────────
+    if wi_info:
+        lines += [
+            "### Linked Work Items",
+            "",
+            "| ID | Type | Priority | Title | Acceptance Criteria |",
+            "|--:|:--|:--:|:--|:--:|",
+        ]
+        for wi in wi_info:
+            has_ac = "✅" if wi.get("has_acceptance_criteria") else "—"
+            prio = PRIORITY_LABEL.get(wi.get("priority", ""), wi.get("priority", "—"))
+            lines.append(
+                f"| #{wi.get('id')} | {wi.get('type', '—')} | {prio}"
+                f" | {wi.get('title', '')} | {has_ac} |"
+            )
+        lines += ["", "---", ""]
+
+    # ── requirements table ────────────────────────────────────────────────────
     if not requisitos:
         lines += [
-            "---", "",
-            "### No Requirements Found", "",
+            "### Requirements",
+            "",
             "No requirements could be extracted from the linked Work Items, "
             "repository rules file, or PR description.",
             "",
-            "**How to fix:** Open the linked Work Item in the board and add "
-            "Acceptance Criteria. The agent will validate them on the next PR update.",
+            "> **Next step** — Open the linked Work Item and add Acceptance Criteria. "
+            "The agent will validate them on the next PR update.",
+            "",
+            "---",
             "",
         ]
     else:
         lines += [
-            "---", "",
-            "### Requirements Validation", "",
-            "| ID | Source | Status | Requirement |",
-            "|---|---|---|---|",
+            "### Requirements",
+            "",
+            "| ID | Priority | Source | Status | Requirement |",
+            "|:--|:--:|:--|:--:|:--|",
         ]
         for r in requisitos_ord:
-            rid = r.get("id", "?")
-            source = SOURCE_LABEL.get(r.get("source", ""), r.get("source", ""))
-            status = STATUS_BADGE.get(r.get("status", "MISSING"), r.get("status", ""))
-            desc = r.get("description", "")
-            desc = desc[:80] + "..." if len(desc) > 80 else desc
-            lines.append(f"| `{rid}` | {source} | **{status}** | {desc} |")
+            rid    = r.get("id", "?")
+            src    = SOURCE_LABEL.get(r.get("source", ""), r.get("source", ""))
+            emoji  = STATUS_EMOJI.get(r.get("status", "MISSING"), "❌")
+            prio   = PRIORITY_LABEL.get(r.get("priority", ""), r.get("priority", "—"))
+            desc   = r.get("description", "")
+            desc   = desc[:90] + "…" if len(desc) > 90 else desc
+            lines.append(f"| `{rid}` | {prio} | {src} | {emoji} | {desc} |")
 
-        needs_detail = [r for r in requisitos_ord if r.get("status") in ("MISSING", "PARTIAL")]
-        if needs_detail:
-            lines += ["", "---", "", "### Issues Requiring Attention", ""]
-            for r in needs_detail:
-                badge = STATUS_BADGE.get(r.get("status"), r.get("status"))
-                rid = r.get("id", "?")
-                evidence = r.get("evidence", "")
-                missing = r.get("missing_detail", "")
+        lines += ["", "---", ""]
+
+        # ── issues requiring attention ────────────────────────────────────────
+        needs_work = [r for r in requisitos_ord if r.get("status") in ("MISSING", "PARTIAL")]
+        if needs_work:
+            lines += ["### ⚠️ Issues Requiring Attention", ""]
+            for r in needs_work:
+                rid    = r.get("id", "?")
+                emoji  = STATUS_EMOJI.get(r.get("status", "MISSING"), "❌")
+                status = STATUS_LABEL.get(r.get("status", ""), r.get("status", ""))
+
+                # ── requirement header ────────────────────────────────────────
+                ev_file = r.get("evidence_file", "unknown_file")
+                ev_line = r.get("evidence_line", "?")
+                
                 lines += [
-                    f"#### [{badge}] `{rid}`", "",
-                    f"**Requirement:** {r.get('description', '')}", "",
+                    f"**{emoji} {rid}** · {status} · `{ev_file}:{ev_line}`",
+                    "",
                 ]
-                if evidence:
-                    lines += ["**Evidence:**", "", f"> {evidence}", ""]
+
+                # ── evidence (code snippet) ───────────────────────────────────
+                ev_code = r.get("evidence_code", [])
+                if ev_code:
+                    code_str = "\n".join(ev_code) if isinstance(ev_code, list) else str(ev_code)
+                    lines += [
+                        "```python",
+                        code_str,
+                        "```",
+                        "",
+                    ]
+
+                # ── brief explanation ─────────────────────────────────────────
+                desc = r.get("description", "")
+                if desc:
+                    lines += [f"> {desc}", ""]
+
+                # ── what is missing ──────────────────────────────────────────
+                missing = r.get("missing_detail", "")
                 if missing:
-                    lines += ["**What is missing:**", "", f"> {missing}", ""]
+                    lines += [f"> {missing}", ""]
+
                 lines += ["---", ""]
 
+
+        # ── implemented ───────────────────────────────────────────────────────
         implemented = [r for r in requisitos_ord if r.get("status") == "IMPLEMENTED"]
         if implemented:
-            lines += ["### Implemented Requirements", ""]
+            lines += ["### ✅ Implemented", ""]
             for r in implemented:
                 lines.append(f"- **`{r.get('id')}`** — {r.get('description', '')[:100]}")
-            lines.append("")
+            lines += ["", "---", ""]
 
+        # ── manual testing ────────────────────────────────────────────────────
         unverifiable = [r for r in requisitos_ord if r.get("status") == "UNVERIFIABLE"]
         if unverifiable:
             lines += [
-                "---", "",
-                "### Manual Testing Required", "",
-                "These requirements cannot be verified through static code analysis:", "",
+                "### 🧪 Manual Testing Required",
+                "",
+                "> The following requirements cannot be verified through static analysis alone.",
+                "",
             ]
             for r in unverifiable:
                 hint = r.get("manual_test_hint", "")
                 lines += [f"**`{r.get('id')}`** — {r.get('description', '')}"]
                 if hint:
-                    lines.append(f"  - *Testing hint: {hint}*")
+                    lines += [f"> 💡 {hint}"]
                 lines.append("")
+            lines += ["---", ""]
 
-    lines += [
-        "---", "",
-        f"*Requirements validation by **{AZURE_MODEL}** via Azure AI Foundry "
-        f"| {metrics.get('time', 0):.1f}s | {metrics.get('tokens', 0)} tokens*",
-    ]
+    # ── footer ────────────────────────────────────────────────────────────────
+    t   = metrics.get("time", 0)
+    tok = metrics.get("tokens", 0)
+    lines.append(f"<sub>⏱ {t:.1f}s · {tok:,} tokens · ScopeReview AI v1.0</sub>")
+
+
     return "\n".join(lines)
 
 
@@ -740,6 +930,51 @@ async def _processar_pr(pr_id: int, repo_id: str, project: str) -> None:
 
     publicar_comentario(repo_id, pr_id, project, formatar_comentario(resultado, pr_info, work_items))
 
+def _processar_pr_sync(payload: dict, injected_findings: list = None) -> None:
+    """Synchronous pipeline for requirements validation."""
+    resource = payload.get("resource", {})
+    pr_id = resource.get("pullRequestId", 0)
+    repo = resource.get("repository", {})
+    repo_id = repo.get("id", "")
+    project = repo.get("project", {}).get("name", "")
+
+    log.info("=" * 60)
+    log.info("[REQUIREMENTS] Starting PR #%s | Project: %s", pr_id, project)
+
+    pr_info = obter_detalhes_pr(repo_id, pr_id, project)
+    if not pr_info or not pr_info.get("commit_sha"):
+        log.error("PR #%s: could not fetch PR details — aborting.", pr_id)
+        return
+
+    commit_sha = pr_info["commit_sha"]
+    log.info("PR: '%s' | Author: %s", pr_info.get("title"), pr_info.get("author"))
+
+    log.info("Fetching linked Work Items...")
+    work_items = obter_todos_work_items(repo_id, pr_id, project)
+    log.info("Work Items: %d", len(work_items))
+
+    regras_repo = obter_regras_repositorio(repo_id, project, commit_sha)
+    mapa_ficheiros = obter_ficheiros_alterados(repo_id, pr_id, project, commit_sha)
+    log.info("Files: %d", len(mapa_ficheiros))
+
+    log.info("Sending to %s...", AZURE_MODEL)
+    prompt = _construir_prompt(pr_info, work_items, regras_repo, mapa_ficheiros, injected_findings)
+    resultado = _chamar_ia(prompt)
+
+    if resultado is None:
+        publicar_comentario(
+            repo_id, pr_id, project,
+            "## ScopeReview AI | Requirements Validation Report\n\n"
+            "WARNING: The AI analysis could not be completed. Check the service logs.",
+        )
+        return
+
+    veredicto = resultado.get("overall_verdict", "?")
+    n_reqs = len(resultado.get("requirements", []))
+    n_pass = sum(1 for r in resultado.get("requirements", []) if r.get("status") == "IMPLEMENTED")
+    log.info("[REQUIREMENTS] Verdict: %s | %d/%d implemented", veredicto, n_pass, n_reqs)
+
+    publicar_comentario(repo_id, pr_id, project, formatar_comentario(resultado, pr_info, work_items))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ENDPOINTS
@@ -752,6 +987,19 @@ async def webhook_requirements(request: Request, background_tasks: BackgroundTas
     Separate path from /webhook so both agents can run on the same host.
     Configure a second Service Hook in Azure DevOps pointing to this path.
     """
+    # Validate webhook secret if configured
+    if WEBHOOK_SECRET:
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Basic "):
+            raise HTTPException(status_code=401, detail="Unauthorized webhook.")
+        try:
+            creds = base64.b64decode(auth[6:]).decode()
+            password = creds.split(":", 1)[-1]
+        except Exception:
+            raise HTTPException(status_code=401, detail="Unauthorized webhook.")
+        if password != WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized webhook.")
+
     try:
         payload = await request.json()
     except Exception:
@@ -768,7 +1016,7 @@ async def webhook_requirements(request: Request, background_tasks: BackgroundTas
     if not all([pr_id, repo_id, project]):
         raise HTTPException(status_code=400, detail="Incomplete payload.")
 
-    if _verificar_duplicado(pr_id):
+    if shared_state.verificar_duplicado(pr_id, agent="requirements"):
         log.warning("[REQUIREMENTS] PR #%s already processed — ignoring retry.", pr_id)
         return {"status": "ignored"}
 
@@ -784,3 +1032,4 @@ def health_requirements():
         "agent": "Requirements Review Agent",
         "model": AZURE_MODEL,
     }
+

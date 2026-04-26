@@ -23,9 +23,10 @@ import json
 import base64
 import logging
 import os
+import re
 import time
-import threading
-import random  # Adicionado para o Jitter no Exponential Backoff
+import random
+from collections import Counter
 from typing import Optional, List, Dict
 
 import requests
@@ -35,10 +36,6 @@ from fastapi import APIRouter, BackgroundTasks, Request, HTTPException
 load_dotenv()
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
 log = logging.getLogger("ScopeReviewAI.CodeReview")
 
 
@@ -59,14 +56,21 @@ AZURE_MODEL = os.getenv("AZURE_MODEL", "Llama-3.3-70B-Instruct")
 AZURE_API_KEY = _obter_env_obrigatoria("AZURE_API_KEY")
 ADO_ORGANIZATION = _obter_env_obrigatoria("ADO_ORGANIZATION")
 ADO_PAT = _obter_env_obrigatoria("ADO_PAT")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
-MAX_FILES = int(os.getenv("MAX_FILES", "5"))
+# Validate HTTPS for credential safety
+if not AZURE_ENDPOINT.startswith("https://"):
+    raise EnvironmentError("AZURE_ENDPOINT must use HTTPS to protect API keys in transit.")
+
+MAX_FILES = int(os.getenv("MAX_FILES", "15"))
 MAX_LINES = int(os.getenv("MAX_LINES", "400"))
 MAX_TOKENS = 8000
 TIMEOUT = 180
 MAX_TENTATIVAS = 3
 NUM_DIV = 50
-DEDUP_SECONDS = 300
+ADO_REQUEST_TIMEOUT = 20
+MAX_TOKEN_BUDGET = int(os.getenv("MAX_TOKEN_BUDGET", "50000"))
+MAX_HIGH_BLOCK = int(os.getenv("MAX_HIGH_BLOCK", "3"))
 
 IGNORED_EXTENSIONS = {
     ".md", ".txt", ".json", ".lock", ".yaml", ".yml", ".png", ".jpg", ".jpeg",
@@ -77,11 +81,14 @@ IGNORED_EXTENSIONS = {
 LANG_MAP = {
     "py": "python", "js": "javascript", "ts": "typescript",
     "cs": "csharp", "java": "java", "go": "go", "cpp": "cpp",
+
 }
 
+
+
+
 # ─── State ────────────────────────────────────────────────────────────────────
-_prs_processados: Dict[int, float] = {}
-_prs_lock = threading.Lock()
+import shared_state
 
 # ─── Router ───────────────────────────────────────────────────────────────────
 router = APIRouter(tags=["Code Review"])
@@ -91,26 +98,17 @@ router = APIRouter(tags=["Code Review"])
 # HELPERS — AZURE DEVOPS
 # ══════════════════════════════════════════════════════════════════════════════
 
+_ADO_AUTH_HEADER = f"Basic {base64.b64encode(f':{ADO_PAT}'.encode()).decode()}"
+
+
 def _ado_headers() -> dict:
-    token = base64.b64encode(f":{ADO_PAT}".encode()).decode()
-    return {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
+    return {"Authorization": _ADO_AUTH_HEADER, "Content-Type": "application/json"}
 
 
 def _linguagem(caminho: str) -> str:
     ext = caminho.rsplit(".", 1)[-1].lower() if "." in caminho else ""
     return LANG_MAP.get(ext, "")
 
-
-def _verificar_duplicado(pr_id: int) -> bool:
-    agora = time.time()
-    with _prs_lock:
-        expiradas = [k for k, v in _prs_processados.items() if agora - v > DEDUP_SECONDS]
-        for k in expiradas:
-            del _prs_processados[k]
-        if (agora - _prs_processados.get(pr_id, 0)) < DEDUP_SECONDS:
-            return True
-        _prs_processados[pr_id] = agora
-        return False
 
 
 def obter_commit_head(repo_id: str, pr_id: int, project: str) -> str:
@@ -119,7 +117,7 @@ def obter_commit_head(repo_id: str, pr_id: int, project: str) -> str:
         f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}?api-version=7.1"
     )
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
         resp.raise_for_status()
         return resp.json().get("lastMergeSourceCommit", {}).get("commitId", "")
     except requests.RequestException as exc:
@@ -135,7 +133,7 @@ def obter_diff_ficheiro(repo_id: str, project: str, path: str, commit_sha: str) 
         f"&versionDescriptor.versionType=commit&api-version=7.1"
     )
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
         resp.raise_for_status()
         linhas = resp.text.splitlines()[:MAX_LINES]
         return "\n".join([f"{i + 1:>4} | {l}" for i, l in enumerate(linhas)])
@@ -151,7 +149,7 @@ def obter_ficheiros_alterados(repo_id: str, pr_id: int, project: str, commit_sha
     )
     mapa = {}
     try:
-        resp = requests.get(url, headers=_ado_headers(), timeout=20)
+        resp = requests.get(url, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
         resp.raise_for_status()
         iter_id = resp.json()["value"][-1]["id"]
 
@@ -159,10 +157,14 @@ def obter_ficheiros_alterados(repo_id: str, pr_id: int, project: str, commit_sha
             f"https://dev.azure.com/{ADO_ORGANIZATION}/{project}"
             f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations/{iter_id}/changes?api-version=7.1"
         )
-        resp_changes = requests.get(url_changes, headers=_ado_headers(), timeout=20)
+        resp_changes = requests.get(url_changes, headers=_ado_headers(), timeout=ADO_REQUEST_TIMEOUT)
+        resp_changes.raise_for_status()
         changes = resp_changes.json().get("changeEntries", [])
 
         for change in changes[:MAX_FILES]:
+            # Skip rename-only changes (no code modification)
+            if change.get("changeType") in ("rename",):
+                continue
             path = change.get("item", {}).get("path", "")
             if path and not any(path.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
                 conteudo = obter_diff_ficheiro(repo_id, project, path, commit_sha)
@@ -184,43 +186,253 @@ def publicar_comentario(repo_id: str, pr_id: int, project: str, texto: str):
         "status": 1,
     }
     try:
-        requests.post(url, headers=_ado_headers(), json=payload, timeout=20).raise_for_status()
+        requests.post(url, headers=_ado_headers(), json=payload, timeout=ADO_REQUEST_TIMEOUT).raise_for_status()
         log.info("Code review published in PR #%s", pr_id)
     except requests.RequestException as exc:
         log.error("Failed to publish code review: %s", exc)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# HELPERS — DETERMINISTIC STATIC CHECKS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Names that are commonly used without import — if found in code but not imports, flag them
+_COMMON_STDLIB_NAMES = {
+    "timedelta": "datetime", "defaultdict": "collections", "deque": "collections",
+    "Path": "pathlib", "Enum": "enum", "dataclass": "dataclasses",
+    "abstractmethod": "abc", "wraps": "functools", "partial": "functools",
+}
+
+
+def _static_checks(path: str, content: str) -> List[dict]:
+    """Deterministic regex-based checks that catch bugs LLMs consistently miss."""
+    findings = []
+    lines = content.splitlines()
+    raw_lines = [l.split("|", 1)[-1] if "|" in l else l for l in lines]  # strip line numbers
+    raw_code = "\n".join(raw_lines)
+
+    # ── 1. Unused imports ─────────────────────────────────────────────────
+    for i, raw_l in enumerate(raw_lines):
+        stripped = raw_l.strip()
+        # "import X" or "from X import Y, Z"
+        m_import = re.match(r'^import\s+(\w+)', stripped)
+        m_from = re.match(r'^from\s+\S+\s+import\s+(.+)', stripped)
+        if m_import:
+            name = m_import.group(1)
+            # Check if name is used anywhere else in the code (excluding the import line itself)
+            other_lines = raw_lines[:i] + raw_lines[i+1:]
+            if not any(re.search(r'\b' + re.escape(name) + r'\b', ol) for ol in other_lines):
+                findings.append({
+                    "file": path, "line": i + 1, "type": "quality", "severity": "low",
+                    "title": f"Unused import: {name}",
+                    "description": f"Module `{name}` is imported but never used in this file.",
+                    "vulnerable_code": [stripped],
+                    "recommendation": f"Remove the unused import `{name}`.",
+                    "fixed_code": [f"# import {name}  — removed (unused)"],
+                    "_source": "static",
+                })
+        elif m_from:
+            names = [n.strip().split(" as ")[-1].strip() for n in m_from.group(1).split(",")]
+            for name in names:
+                if not name or name == "*":
+                    continue
+                other_lines = raw_lines[:i] + raw_lines[i+1:]
+                if not any(re.search(r'\b' + re.escape(name) + r'\b', ol) for ol in other_lines):
+                    findings.append({
+                        "file": path, "line": i + 1, "type": "quality", "severity": "low",
+                        "title": f"Unused import: {name}",
+                        "description": f"`{name}` is imported but never used in this file.",
+                        "vulnerable_code": [stripped],
+                        "recommendation": f"Remove the unused import `{name}`.",
+                        "fixed_code": [],
+                        "_source": "static",
+                    })
+
+    # ── 2. print() in production code ─────────────────────────────────────
+    for i, raw_l in enumerate(raw_lines):
+        if re.search(r'\bprint\s*\(', raw_l.strip()) and not raw_l.strip().startswith("#"):
+            findings.append({
+                "file": path, "line": i + 1, "type": "quality", "severity": "medium",
+                "title": "print() used instead of logging",
+                "description": "Production code should use the `logging` module, not `print()`. "
+                               "Print statements bypass log configuration and cannot be filtered.",
+                "vulnerable_code": [raw_l.strip()],
+                "recommendation": "Replace with `log.debug(...)` or `log.info(...)`.",
+                "fixed_code": [raw_l.strip().replace("print(", "log.info(", 1)],
+                "_source": "static",
+            })
+
+    # ── 3. Broad except clauses ───────────────────────────────────────────
+    for i, raw_l in enumerate(raw_lines):
+        stripped = raw_l.strip()
+        if re.match(r'^except\s*:', stripped) or re.match(r'^except\s+Exception\s*:', stripped):
+            findings.append({
+                "file": path, "line": i + 1, "type": "quality", "severity": "medium",
+                "title": "Broad exception handler",
+                "description": "Catching `Exception` or using a bare `except:` hides real errors. "
+                               "Catch specific exceptions (e.g., `sqlite3.Error`, `ValueError`).",
+                "vulnerable_code": [stripped],
+                "recommendation": "Replace with specific exception types and log the error.",
+                "fixed_code": [stripped.replace("Exception", "SpecificError as e") if "Exception" in stripped
+                               else stripped.replace("except:", "except SpecificError as e:")],
+                "_source": "static",
+            })
+
+    # ── 4. DEBUG logging in production ────────────────────────────────────
+    for i, raw_l in enumerate(raw_lines):
+        if re.search(r'level\s*=\s*logging\.DEBUG', raw_l) or re.search(r'level\s*=\s*DEBUG', raw_l):
+            findings.append({
+                "file": path, "line": i + 1, "type": "quality", "severity": "medium",
+                "title": "DEBUG logging level in production",
+                "description": "Logging level is set to DEBUG, which generates excessive output "
+                               "in production and may expose sensitive data.",
+                "vulnerable_code": [raw_l.strip()],
+                "recommendation": "Set to `logging.INFO` or higher for production.",
+                "fixed_code": [raw_l.strip().replace("DEBUG", "INFO")],
+                "_source": "static",
+            })
+
+    # ── 5. Missing imports (name used but never imported/defined) ─────────
+    for name, module in _COMMON_STDLIB_NAMES.items():
+        if re.search(r'\b' + re.escape(name) + r'\b', raw_code):
+            # Check if it's actually imported
+            if not re.search(r'import\s+.*\b' + re.escape(name) + r'\b', raw_code):
+                # Find first usage line
+                for i, raw_l in enumerate(raw_lines):
+                    if re.search(r'\b' + re.escape(name) + r'\b', raw_l):
+                        findings.append({
+                            "file": path, "line": i + 1, "type": "bug", "severity": "high",
+                            "title": f"NameError: `{name}` used but never imported",
+                            "description": f"`{name}` is used but not imported. This will cause "
+                                           f"a `NameError` at runtime. It should be imported from `{module}`.",
+                            "vulnerable_code": [raw_l.strip()],
+                            "recommendation": f"Add `from {module} import {name}` to the imports.",
+                            "fixed_code": [f"from {module} import {name}"],
+                            "_source": "static",
+                        })
+                        break
+
+    # ── 6. Unreachable code (pass followed by return) ─────────────────────
+    for i in range(len(raw_lines) - 1):
+        curr = raw_lines[i].strip()
+        nxt = raw_lines[i + 1].strip()
+        if curr == "pass" and nxt.startswith("return "):
+            findings.append({
+                "file": path, "line": i + 2, "type": "bug", "severity": "medium",
+                "title": "Unreachable code after `pass`",
+                "description": "The `return` statement after `pass` may indicate dead code or a logic error. "
+                               "The `pass` is redundant if followed by `return`.",
+                "vulnerable_code": [curr, nxt],
+                "recommendation": "Remove the `pass` statement or restructure the logic.",
+                "fixed_code": [nxt],
+                "_source": "static",
+            })
+
+    # ── 7. Rowcount check after UPDATE/DELETE ─────────────────────────────
+    for i, raw_l in enumerate(raw_lines):
+        if re.search(r'cursor\.execute\s*\(\s*["\'](?:UPDATE|DELETE)', raw_l, re.I):
+            lookahead = "\n".join(raw_lines[i+1:i+6])
+            if "rowcount" not in lookahead and "commit()" in lookahead:
+                findings.append({
+                    "file": path, "line": i + 1, "type": "quality", "severity": "medium",
+                    "title": "Missing rowcount check after UPDATE/DELETE",
+                    "description": "Executing an UPDATE or DELETE without verifying if any rows were affected (cursor.rowcount).",
+                    "vulnerable_code": [raw_l.strip()],
+                    "recommendation": "Check if cursor.rowcount > 0 to ensure the operation actually affected rows.",
+                    "fixed_code": [],
+                    "_source": "static",
+                })
+
+    # ── 8. PII in log statements ──────────────────────────────────────────
+    for i, raw_l in enumerate(raw_lines):
+        if re.search(r'log\.(info|debug|warning|error|critical)\s*\(.*\b(email|password|token|ip_address|phone|nif|ssn)\b', raw_l, re.I):
+            findings.append({
+                "file": path, "line": i + 1, "type": "security", "severity": "medium",
+                "title": "Possible PII exposed in logs",
+                "description": "Logging sensitive data (PII) like email, passwords, IPs or tokens is a security risk.",
+                "vulnerable_code": [raw_l.strip()],
+                "recommendation": "Mask the sensitive information before logging, or remove it from the log message.",
+                "fixed_code": [],
+                "_source": "static",
+            })
+
+    # ── 9. Negative number guard for LIMIT/OFFSET ─────────────────────────
+    for i, raw_l in enumerate(raw_lines):
+        if re.search(r'LIMIT\s+\?', raw_l, re.I):
+            lookback = "\n".join(raw_lines[max(0,i-10):i])
+            if not re.search(r'if\s+.*limit.*[<>]|max\(|min\(', lookback, re.I):
+                findings.append({
+                    "file": path, "line": i + 1, "type": "security", "severity": "medium",
+                    "title": "Unvalidated LIMIT parameter in SQL query",
+                    "description": "Using a parameter for LIMIT without explicitly validating it against negative values or setting a maximum bound.",
+                    "vulnerable_code": [raw_l.strip()],
+                    "recommendation": "Ensure the limit variable is validated (e.g., limit = max(1, min(100, limit))).",
+                    "fixed_code": [],
+                    "_source": "static",
+                })
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # HELPERS — AI ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _build_context_header(content: str) -> str:
+    """Extract imports and class/function signatures as context for each block."""
+    lines = content.splitlines()
+    context = []
+    for line in lines:
+        stripped = line.strip()
+        if (stripped.startswith("import ") or stripped.startswith("from ") or
+            stripped.startswith("class ") or stripped.startswith("def ")):
+            context.append(stripped)
+    if not context:
+        return ""
+    return "# FILE CONTEXT (imports & signatures):\n" + "\n".join(context[:30]) + "\n\n"
+
+def _sanitize_json(raw: str) -> str:
+    """Fix common LLM JSON issues: invalid escape sequences and trailing commas."""
+    # Fix invalid escape sequences (e.g. \d, \s, \w) — only valid JSON escapes are: \" \\ \/ \b \f \n \r \t \uXXXX
+    fixed = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', raw)
+    # Remove trailing commas before } or ]
+    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    return fixed
+
 def _dividir_em_blocos(conteudo: str) -> List[str]:
-    linhas = conteudo.splitlines()
-    return ["\n".join(linhas[i:i + NUM_DIV]) for i in range(0, len(linhas), NUM_DIV)]
+    padrao = r'\n(?=\s*\d+\s*\|\s*(?:def |class |async def |public |private |protected |static |function ))'
+    fragmentos = re.split(padrao, conteudo)
+    blocos, atual = [], ""
+    for i, frag in enumerate(fragmentos):
+        atual += frag
+        if len(atual.splitlines()) >= NUM_DIV or i == len(fragmentos) - 1:
+            if atual.strip():
+                blocos.append(atual)
+            atual = ""
+    return blocos if blocos else [conteudo]
 
 
-def _analisar_bloco(caminho: str, bloco: str, tentativa: int = 1) -> Optional[dict]:
-    start_time = time.time()
+def _analisar_bloco(caminho: str, bloco: str) -> Optional[dict]:
     headers = {"api-key": AZURE_API_KEY, "Content-Type": "application/json"}
 
-    prompt = f"""Analyse this code block from '{caminho}'.
-Respond ONLY in valid JSON.
-STRICT RULES:
-- You are a practical Senior Mentor, not a rigid auditor.
-- Only report HIGH or CRITICAL for real, exploitable vulnerabilities (SQLi, Hardcoded Secrets, Critical Logic Bugs).
-- Architectural improvements must be LOW or MEDIUM.
-- If the code is functional and secure against common attacks, approve it.
-- os.getenv() calls are ACCEPTABLE — do not flag as hardcoding.
-- Parameterised queries using ? placeholders are CORRECT — do not flag as SQL Injection.
-- log.info(), log.warning() ARE the logging module — never report as "print used".
-- CRITICAL JSON RULE 1: For 'vulnerable_code' and 'fixed_code', NEVER use a multi-line string. You MUST output an ARRAY OF STRINGS (one string per line of code).
-- CRITICAL JSON RULE 2: You MUST escape all double quotes inside your string values with a backslash.
-- CRITICAL JSON RULE 3: NEVER leave trailing commas in your JSON object or arrays.
-- Do NOT output markdown formatting (like ```json). Return raw JSON only.
-- BE RELAXED: Do not be a "perfectionist". If the code follows standard secure patterns, it's fine.
-- PRAGMATIC SECURITY: Do not demand advanced frameworks (like bcrypt or hmac) unless the current implementation is clearly broken or exposed. Standard library solutions (like hashlib) are acceptable.
-- GRADING POLICY: Give a score >= 7 if the code is functional, readable, and lacks critical vulnerabilities. Only give < 7 if the code is genuinely dangerous or poorly written.
-- IGNORE NITPICKS: Do not report "Magic Strings" or "Missing Constants" as High/Critical. Those are LOW quality issues at most.
+    prompt = f"""Analyse this code block from '{caminho}'. Respond ONLY in valid JSON.
+RULES:
+- Be a practical Senior Mentor. If the code is functional and secure, approve it.
+- HIGH/CRITICAL only for real, exploitable vulnerabilities (SQLi, Hardcoded Secrets, Critical Logic Bugs, Runtime Crashes).
+- Architectural improvements, Magic Strings, Missing Constants → LOW or MEDIUM at most.
+- os.getenv() is ACCEPTABLE. Parameterised queries (? placeholders) are CORRECT. log.info()/log.warning() ARE the logging module.
+- JSON RULES: 'vulnerable_code'/'fixed_code' MUST be arrays of strings (one per line). Escape double quotes. No trailing commas. No markdown fences.
+MANDATORY CHECKS — verify EACH ONE:
+1. PASSWORDS: Is the password hashed before DB comparison? If compared in plaintext → HIGH.
+2. ERROR HANDLING: Broad `except Exception:` or bare `except:` that hides errors → MEDIUM.
+3. INPUT VALIDATION: Missing checks for None, empty strings, negative numbers, wrong types → MEDIUM.
+4. EDGE CASES: Login failures without user_id logged? Functions that silently fail without error info? → MEDIUM.
+5. TYPE HINTS: Public methods without return type hints → LOW.
+6. ATOMICITY: Bulk DB operations that mix queries and side-effects (e.g. log_action inside a for loop before commit) → MEDIUM.
+ALSO CHECK (type="quality", severity="low"/"medium"):
+- PERFORMANCE: O(n²) in hot paths, repeated DB calls
+- MAINTAINABILITY: dead code, DRY violations > 5 lines
+- TESTABILITY: untestable side effects, hidden dependencies
 
 JSON Format:
 {{
@@ -250,7 +462,7 @@ Code:
         "messages": [
             {
                 "role": "system",
-                "content": "You are a Senior Mentor. Focus on real risks. Be concise. Respond only in JSON."
+                "content": "You are a thorough Senior Code Reviewer. Analyse code for security flaws, bugs, missing error handling, and code quality issues. Report ALL issues you find. Respond only in valid JSON."
             },
             {"role": "user", "content": prompt},
         ],
@@ -258,93 +470,126 @@ Code:
         "max_tokens": MAX_TOKENS,
     }
 
-    try:
-        resp = requests.post(AZURE_ENDPOINT, headers=headers, json=payload, timeout=TIMEOUT)
-
-        # Se for erro 429, o raise_for_status vai atirar a exceção que é apanhada abaixo
-        resp.raise_for_status()
-
-        data = resp.json()
-        usage = data.get("usage", {})
-        elapsed = time.time() - start_time
-        p_tokens = usage.get("prompt_tokens", 0)
-        c_tokens = usage.get("completion_tokens", 0)
-
-        log.info("  [BLOCK] %.2fs | %dP / %dC tokens", elapsed, p_tokens, c_tokens)
-
-        raw = data["choices"][0]["message"]["content"].strip()
-
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start == -1 or end == -1:
-            return None
-
+    for tentativa in range(1, MAX_TENTATIVAS + 1):
+        start_time = time.time()
         try:
-            res = json.loads(raw[start:end + 1], strict=False)
-            res["_metrics"] = {"time": elapsed, "p_tokens": p_tokens, "c_tokens": c_tokens}
-            return res
-        except json.JSONDecodeError as json_err:
-            log.error("Erro a ler o JSON da IA: %s", json_err)
-            return None
+            resp = requests.post(AZURE_ENDPOINT, headers=headers, json=payload, timeout=TIMEOUT)
+            resp.raise_for_status()
 
-    except requests.RequestException as exc:
-        if tentativa < MAX_TENTATIVAS:
+            data = resp.json()
+            usage = data.get("usage", {})
+            elapsed = time.time() - start_time
+            p_tokens = usage.get("prompt_tokens", 0)
+            c_tokens = usage.get("completion_tokens", 0)
+
+            log.info("  [BLOCK] %.2fs | %dP / %dC tokens", elapsed, p_tokens, c_tokens)
+
+            raw = data["choices"][0]["message"]["content"].strip()
+
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1:
+                return None
+
+            try:
+                sanitized = _sanitize_json(raw[start:end + 1])
+                res = json.loads(sanitized)
+                res["_metrics"] = {"time": elapsed, "p_tokens": p_tokens, "c_tokens": c_tokens}
+                return res
+            except json.JSONDecodeError as json_err:
+                log.error("Failed to parse AI JSON response: %s", json_err)
+                return None
+
+        except requests.RequestException as exc:
+            if tentativa >= MAX_TENTATIVAS:
+                log.error("AI call failed after %d attempts: %s", MAX_TENTATIVAS, exc)
+                return None
+
             espera = 0
 
-            # 1. Tentar respeitar o cabeçalho 'Retry-After' (Boa prática REST)
+            # 1. Respect the Retry-After header (REST best practice)
             if hasattr(exc, 'response') and exc.response is not None:
                 if exc.response.status_code == 429:
                     retry_header = exc.response.headers.get("Retry-After")
                     if retry_header and retry_header.isdigit():
                         espera = int(retry_header)
 
-            # 2. Exponential Backoff + Jitter (Se não houver Retry-After ou for outro erro)
+            # 2. Exponential Backoff + Jitter
             if espera == 0:
-                base_delay = 2 ** tentativa  # Tentativa 1: 2s | Tentativa 2: 4s | Tentativa 3: 8s
-                jitter = random.uniform(0, 1) # Adiciona aleatoriedade
+                base_delay = 2 ** (tentativa + 1)
+                jitter = random.uniform(0, base_delay * 0.5)
                 espera = base_delay + jitter
 
             log.warning(
-                "Falha na API (possível Rate Limit). Backoff ativo: a esperar %.2fs antes da tentativa %d/%d...",
+                "API failure (possible Rate Limit). Backoff: waiting %.2fs before attempt %d/%d...",
                 espera, tentativa + 1, MAX_TENTATIVAS
             )
             time.sleep(espera)
-            return _analisar_bloco(caminho, bloco, tentativa + 1)
 
-        log.error("AI call failed after %d attempts: %s", MAX_TENTATIVAS, exc)
-        return None
+    return None
 
 
 def obter_revisao_ia(mapa: Dict[str, str]) -> Optional[dict]:
     all_f, all_p, scores, summaries = [], [], [], []
     total_time, total_p, total_c = 0, 0, 0
 
+    # ── Phase 1: Deterministic static checks (free, no tokens) ─────────────
+    for path, content in mapa.items():
+        static_findings = _static_checks(path, content)
+        if static_findings:
+            log.info("  [STATIC] '%s' — %d finding(s)", path, len(static_findings))
+            all_f.extend(static_findings)
+
+    # ── Phase 2: LLM analysis (per block) ─────────────────────────────────────
     for path, content in mapa.items():
         blocos = _dividir_em_blocos(content)
+        context_header = _build_context_header(content)
         log.info("Analysing '%s' — %d block(s)", path, len(blocos))
         for i, b in enumerate(blocos):
+            if total_p + total_c >= MAX_TOKEN_BUDGET:
+                log.warning("Token budget exhausted (%d tokens). Stopping analysis.", total_p + total_c)
+                break
+            if i > 0:
+                time.sleep(0.5)
             log.info("  [BLOCK %d/%d]", i + 1, len(blocos))
-            res = _analisar_bloco(path, b)
-            if res:
-                metrics = res.get("_metrics", {})
-                total_time += metrics.get("time", 0)
-                total_p += metrics.get("p_tokens", 0)
-                total_c += metrics.get("c_tokens", 0)
-                for f in res.get("findings", []):
-                    f["file"] = path
-                    all_f.append(f)
-                all_p.extend(res.get("positive_aspects", []))
-                if isinstance(res.get("security_score"), int):
-                    scores.append(res["security_score"])
-                if res.get("summary"):
-                    summaries.append(res["summary"])
+            res = _analisar_bloco(path, context_header + b)
+            if res is None:
+                log.warning("  [BLOCK %d/%d] could not be analysed — adding warning finding.", i + 1, len(blocos))
+                all_f.append({
+                    "file": path, "line": None, "type": "quality", "severity": "low",
+                    "title": f"Block {i + 1}/{len(blocos)} could not be analysed",
+                    "description": "This code block failed all AI inference attempts and was not reviewed.",
+                    "vulnerable_code": [], "recommendation": "Review this block manually.",
+                    "fixed_code": []
+                })
+                continue
+
+            for f in res.get("findings", []):
+                f["file"] = path
+                all_f.append(f)
+            all_p.extend(res.get("positive_aspects", []))
+            if res.get("security_score") is not None:
+                scores.append(res["security_score"])
+            if res.get("summary"):
+                summaries.append(res["summary"])
+            m = res.get("_metrics", {})
+            total_time += m.get("time", 0)
+            total_p += m.get("p_tokens", 0)
+            total_c += m.get("c_tokens", 0)
 
     if not scores and not all_f:
         return None
 
+    # ── Phase 3: Deduplication and scoring ─────────────────────────────────────
     vistos, unique_f = set(), []
-    for f in all_f:
-        key = (f.get("file"), f.get("line"), f.get("title", "")[:30])
+    
+    # Prioritize static findings by processing them first
+    sorted_all_f = sorted(all_f, key=lambda x: 0 if x.get("_source") == "static" else 1)
+    
+    for f in sorted_all_f:
+        # Aggressive dedup: same file + same line ± 2 + same type = same finding
+        line_group = f.get("line", 0) // 3 if f.get("line") else 0
+        key = (f.get("file"), line_group, f.get("type"))
         if key not in vistos:
             vistos.add(key)
             unique_f.append(f)
@@ -352,35 +597,43 @@ def obter_revisao_ia(mapa: Dict[str, str]) -> Optional[dict]:
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     unique_f.sort(key=lambda x: order.get(x.get("severity", "low"), 99))
 
-    # 1. Calcular a nota final PRIMEIRO
-    final_score = min(max(round(sum(scores) / len(scores)), 1), 10) if scores else 5
+    # Deterministic score calculation based on findings (replaces LLM scoring)
+    penalty = {
+        "critical": 3.0,
+        "high": 1.5,
+        "medium": 0.5,
+        "low": 0.15
+    }
+    total_penalty = sum(penalty.get(f.get("severity", "low"), 0) for f in unique_f)
+    final_score = max(1, min(10, round(10 - total_penalty)))
 
-    # 2. Nova regra de "Justiça":
     sevs_list = [f.get("severity") for f in unique_f]
     num_high = sevs_list.count("high")
     has_critical = "critical" in sevs_list
 
-    # 3. Só reprova se: Tem Crítico OU tem mais de 3 Highs OU nota < 7
-    approved = not (has_critical or num_high > 3 or final_score < 7)
+    # Verdict: CRITICALs always block. HIGHs block above configurable threshold.
+    approved = not (has_critical or num_high >= MAX_HIGH_BLOCK or final_score < 7)
 
     clean_p, p_vistos = [], set()
     for p in sorted(set(all_p), key=len, reverse=True):
         if len(clean_p) >= 5:
             break
-        pref = " ".join(p.lower().split()[:4])
+        pref = " ".join(str(p).lower().split()[:4]) if p else ""
         if pref not in p_vistos:
             p_vistos.add(pref)
             clean_p.append(p)
 
     log.info(
-        "[CODE REVIEW SUMMARY] %.2fs | %d tokens | %d findings",
+        "[CODE REVIEW SUMMARY] %.2fs | %d tokens | %d findings (static: %d, LLM: %d)",
         total_time, total_p + total_c, len(unique_f),
+        sum(1 for f in unique_f if f.get("_source") == "static"),
+        sum(1 for f in unique_f if f.get("_source") != "static"),
     )
 
     return {
         "findings": unique_f,
         "positive_aspects": clean_p,
-        "security_score": final_score,  # Passamos a usar a variável aqui
+        "security_score": final_score,
         "approve": approved,
         "executive_summary": summaries[0] if summaries else "Analysis completed.",
         "metrics": {"time": total_time, "tokens": total_p + total_c},
@@ -391,55 +644,91 @@ def obter_revisao_ia(mapa: Dict[str, str]) -> Optional[dict]:
 # COMMENT FORMATTING
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _barra_score(score: int) -> str:
-    return f"`{'█' * score}{'░' * (10 - score)}` **{score}/10**"
+_SEV_EMOJI = {
+    "critical": "🔴",
+    "high":     "🟠",
+    "medium":   "🟡",
+    "low":      "🔵",
+}
+
+_SEV_LABEL = {
+    "critical": "CRITICAL",
+    "high":     "HIGH",
+    "medium":   "MEDIUM",
+    "low":      "LOW",
+}
+
+_TYPE_LABEL = {
+    "security": "Security",
+    "bug":      "Bug",
+    "quality":  "Quality",
+}
+
+
+def _score_gauge(score: int) -> str:
+    """Renders a clean 10-step gauge for the security score."""
+    filled = "█" * score
+    empty  = "░" * (10 - score)
+    return f"`{filled}{empty}`  **{score} / 10**"
 
 
 def formatar_comentario(res: dict) -> str:
-    score = res.get("security_score", 5)
+    """Formats code review results as a modern, minimalist Markdown PR comment."""
+
+
+    score    = res.get("security_score", 5)
     findings = res.get("findings", [])
     aprovado = res.get("approve", False)
-    metrics = res.get("metrics", {})
+    metrics  = res.get("metrics", {})
 
-    badge = "**PASSED** — *Ready for merge*" if aprovado else "**ACTION REQUIRED** — *Critical findings detected*"
+    sev_counts = Counter(f.get("severity", "low").lower() for f in findings)
 
+    # ── verdict ───────────────────────────────────────────────────────────────
+    if aprovado:
+        verdict = "✅  Cleared for merge — no blocking issues detected."
+    else:
+        verdict = "⛔  Review required — one or more issues must be addressed before merging."
+
+    # ── header ────────────────────────────────────────────────────────────────
     lines = [
-        "## ScopeReview AI | Code Review Report",
-        "---",
-        "### Overview",
+        "## 🔍  Code Review",
         "",
-        "| Metric | Value |",
-        "|---|---|",
-        f"| Security Score | {_barra_score(score)} |",
-        f"| Recommendation | {badge} |",
-        f"| Total Issues | {len(findings)} |",
-        "",
-        "### Executive Summary",
-        "",
-        f"> {res.get('executive_summary')}",
+        f"> **ScopeReview AI**  ·  `{AZURE_MODEL}`  ·  Automated static analysis",
         "",
         "---",
+        "",
+        "| | |",
+        "|:--|:--|",
+        f"| **Score** | {_score_gauge(score)} |",
+        f"| **Verdict** | {verdict} |",
+        "",
+        "| 🔴 Critical | 🟠 High | 🟡 Medium | 🔵 Low |",
+        "|:--:|:--:|:--:|:--:|",
+        f"| {sev_counts.get('critical', 0)} | {sev_counts.get('high', 0)} | {sev_counts.get('medium', 0)} | {sev_counts.get('low', 0)} |",
+        "",
     ]
 
-    if findings:
-        lines += [
-            "### Findings Index", "",
-            "| ID | Severity | Category | Location | Title |",
-            "|:---|:---|:---|:---|:---|",
-        ]
-        for i, f in enumerate(findings, 1):
-            lines.append(
-                f"| {i:02d} | `{f.get('severity', '').upper()}` "
-                f"| {f.get('type', '').upper()} "
-                f"| `{f.get('file', '').split('/')[-1]}:{f.get('line', '-')}` "
-                f"| {f.get('title')} |"
-            )
+    # ── executive summary ─────────────────────────────────────────────────────
+    summary = res.get("executive_summary", "")
+    if summary:
+        lines += [f"> {summary}", ""]
 
-        lines += ["", "---", "### Detailed Analysis", ""]
+    lines += ["---", ""]
+
+    # ── findings ──────────────────────────────────────────────────────────────
+    if findings:
+        lines += ["### Findings", ""]
+
         for i, f in enumerate(findings, 1):
             lang = _linguagem(f.get("file", ""))
+            sev_emoji = _SEV_EMOJI.get(f.get("severity", "low").lower(), "🔵")
+            sev_label = _SEV_LABEL.get(f.get("severity", "low").lower(), "LOW")
+            cat   = _TYPE_LABEL.get(f.get("type", ""), f.get("type", "").capitalize())
+            title = f.get("title", "")
+            file  = f.get("file", "").split("/")[-1]
+            line_num = f.get("line", "—")
+            loc = f"`{file}:{line_num}`" if line_num and line_num != "—" else f"`{file}`"
 
-            # --- PROTEÇÃO DO ARRAY DE CÓDIGO ---
             vuln_code = f.get("vulnerable_code", "")
             if isinstance(vuln_code, list):
                 vuln_code = "\n".join(vuln_code)
@@ -448,43 +737,64 @@ def formatar_comentario(res: dict) -> str:
             if isinstance(fixed_code, list):
                 fixed_code = "\n".join(fixed_code)
 
+            # ── finding header ────────────────────────────────────────────────
             lines += [
-                f"#### {i:02d} | {f.get('severity', '').upper()}: {f.get('title')}",
-                f"**Location:** `{f.get('file')}` (Line {f.get('line', '-')})",
-                "",
-                f"**Context & Impact** \n{f.get('description')}",
+                f"**{i} · {sev_emoji} {sev_label}** · {cat} · {loc}",
                 "",
             ]
-            if vuln_code:
+
+            # ── code where the issue is ───────────────────────────────────────
+            if vuln_code and vuln_code.strip():
                 lines += [
-                    f"**Vulnerable Implementation**",
                     f"```{lang}",
                     vuln_code.strip(),
-                    "```", "",
+                    "```",
+                    "",
                 ]
-            if f.get("recommendation"):
-                lines += [f"**Remediation Strategy** \n{f.get('recommendation')}", ""]
-            if fixed_code:
+
+            # ── brief justification ──────────────────────────────────────────
+            desc = f.get("description", "")
+            if desc:
+                lines += [f"> {desc}", ""]
+
+            # ── suggestion ────────────────────────────────────────────────────
+            rec = f.get("recommendation", "")
+            if rec:
+                lines += [f"**💡 Suggestion** — {rec}", ""]
+
+            if fixed_code and fixed_code.strip():
                 lines += [
-                    "**Suggested Correction**",
                     f"```{lang}",
                     fixed_code.strip(),
-                    "```", "",
+                    "```",
+                    "",
                 ]
-            lines += ["---"]
+
+            lines += ["---", ""]
+
     else:
-        lines += ["", "### No Issues Found", "", "The code passed all automated checks.", ""]
+        lines += [
+            "### Findings",
+            "",
+            "No issues detected. The code passed all automated checks. ✅",
+            "",
+            "---",
+            "",
+        ]
 
-    if res.get("positive_aspects"):
-        lines += ["### Positive Aspects", ""]
-        lines += [f"- {p}" for p in res["positive_aspects"]]
-        lines.append("")
+    # ── positive aspects ──────────────────────────────────────────────────────
+    positives = res.get("positive_aspects", [])
+    if positives:
+        lines += ["### ✨ Strengths", ""]
+        for p in positives:
+            lines.append(f"- {p}")
+        lines += ["", "---", ""]
 
-    lines += [
-        "---",
-        f"*Generated by **{AZURE_MODEL}** via Azure AI Foundry "
-        f"| {metrics.get('time', 0):.1f}s | {metrics.get('tokens', 0)} tokens*",
-    ]
+    # ── footer ────────────────────────────────────────────────────────────────
+    t = metrics.get("time", 0)
+    tok = metrics.get("tokens", 0)
+    lines.append(f"<sub>⏱ {t:.1f}s · {tok:,} tokens · ScopeReview AI v1.0</sub>")
+
     return "\n".join(lines)
 
 
@@ -511,6 +821,34 @@ async def _processar_pr(pr_id: int, repo_id: str, project: str) -> None:
     else:
         log.error("Code review analysis failed for PR #%s", pr_id)
 
+def _processar_pr_sync(payload: dict) -> list:
+    """Synchronous pipeline that returns findings for orchestration."""
+    resource = payload.get("resource", {})
+    pr_id = resource.get("pullRequestId", 0)
+    repo = resource.get("repository", {})
+    repo_id = repo.get("id", "")
+    project = repo.get("project", {}).get("name", "")
+
+    log.info("=" * 60)
+    log.info("[CODE REVIEW] Starting PR #%s | Project: %s", pr_id, project)
+
+    sha = obter_commit_head(repo_id, pr_id, project)
+    if not sha:
+        return []
+
+    mapa = obter_ficheiros_alterados(repo_id, pr_id, project, sha)
+    if not mapa:
+        log.warning("PR #%s: no relevant files found.", pr_id)
+        return []
+
+    res = obter_revisao_ia(mapa)
+    if res:
+        publicar_comentario(repo_id, pr_id, project, formatar_comentario(res))
+        return res.get("findings", [])
+    else:
+        log.error("Code review analysis failed for PR #%s", pr_id)
+        return []
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ENDPOINTS
@@ -518,6 +856,19 @@ async def _processar_pr(pr_id: int, repo_id: str, project: str) -> None:
 
 @router.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
+    # Validate webhook secret if configured
+    if WEBHOOK_SECRET:
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Basic "):
+            raise HTTPException(status_code=401, detail="Unauthorized webhook.")
+        try:
+            creds = base64.b64decode(auth[6:]).decode()
+            password = creds.split(":", 1)[-1]
+        except Exception:
+            raise HTTPException(status_code=401, detail="Unauthorized webhook.")
+        if password != WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Unauthorized webhook.")
+
     try:
         payload = await request.json()
     except Exception:
@@ -534,7 +885,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     if not all([pr_id, repo_id, project]):
         raise HTTPException(status_code=400, detail="Incomplete payload.")
 
-    if _verificar_duplicado(pr_id):
+    if shared_state.verificar_duplicado(pr_id, agent="code_review"):
         log.warning("[CODE REVIEW] PR #%s already processed — ignoring retry.", pr_id)
         return {"status": "ignored"}
 

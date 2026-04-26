@@ -18,6 +18,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar código fonte
 COPY src/ .
 
+# Run as non-root user (security best practice)
+RUN useradd --create-home appuser
+USER appuser
+
 # Expor porta
 EXPOSE 8000
 
