@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código fonte
-COPY src/ .
+COPY src/ ./src/
 
 # Run as non-root user (security best practice)
 RUN useradd --create-home appuser
@@ -26,4 +26,4 @@ USER appuser
 EXPOSE 8000
 
 # Comando de arranque
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

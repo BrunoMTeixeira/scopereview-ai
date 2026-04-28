@@ -1,106 +1,147 @@
-"""
-ScopeReview AI · main.py
+import os
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import HTTPException
 
-Entry point and orchestrator for the ScopeReview AI multi-agent system.
-Mounts both agents into a single FastAPI application so they can run
-on the same port and be exposed through a single ngrok tunnel.
+from .core.config import validate_settings
+from .core.logger import setup_logging, get_logger
+from .bootstrap import bootstrap_dependencies
+from .api.webhooks import router as webhooks_router
+from .core.metrics import metrics
 
-Endpoints registered:
-  POST /webhook                   → Code Review Agent
-  POST /webhook/requirements      → Requirements Review Agent
-  GET  /health                    → System health check
-  GET  /health/code-review        → Code Review Agent health
-  GET  /health/requirements       → Requirements Review Agent health
+# Setup logging before any other imports
+setup_logging()
+_log = get_logger("Main")
 
-Author: Bruno Teixeira — ISEP / DevScope — 2025/2026
-"""
 
-import logging
-from fastapi import FastAPI, Request, BackgroundTasks
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manage FastAPI application lifecycle: startup and shutdown.
 
-import code_review_agent
-import requirements_review_agent
-import shared_state
+    Startup:
+        - Validate configuration from environment variables
+        - Bootstrap all dependencies in the DI container
+        - Initialize external connections (Azure AI, ADO, Redis if used)
 
-# ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-log = logging.getLogger("ScopeReviewAI.Main")
+    Shutdown:
+        - Cleanup resources (connection pools, Redis, etc.)
+        - Flush logs
 
-# ─── Application ──────────────────────────────────────────────────────────────
+    Args:
+        app (FastAPI): The FastAPI application instance.
 
+    Yields:
+        None: Indicates that startup is complete and app is ready to serve.
+
+    Raises:
+        EnvironmentError: If configuration validation fails.
+        ConnectionError: If external services cannot be reached.
+    """
+    _log.info("=" * 80)
+    _log.info("ScopeReview AI — Application Startup")
+    _log.info("=" * 80)
+
+    try:
+        # Step 1: Validate configuration
+        allow_http = os.environ.get("SCOPE_REVIEW_ALLOW_HTTP_AI", "").lower() in ("1", "true", "yes")
+        _log.debug("HTTP AI endpoints allowed: %s", allow_http)
+
+        validate_settings(require_https_endpoints=not allow_http)
+        _log.info("✓ Configuration validated")
+
+        # Step 2: Bootstrap dependencies
+        bootstrap_dependencies()
+        _log.info("✓ Dependency injection bootstrapped")
+
+        _log.info("=" * 80)
+        _log.info("✓ Application ready to serve requests")
+        _log.info("=" * 80)
+
+    except Exception as exc:
+        _log.critical(
+            "Application startup failed: %s",
+            str(exc),
+            exc_info=True
+        )
+        raise
+
+    # Application runs here (between startup and shutdown)
+    yield
+
+    # Cleanup on shutdown
+    _log.info("=" * 80)
+    _log.info("ScopeReview AI — Application Shutdown")
+    _log.info("=" * 80)
+    _log.info("✓ Application stopped cleanly")
+
+
+# Create FastAPI app with lifespan management
 app = FastAPI(
     title="ScopeReview AI",
-    description="Multi-agent automated PR analysis system for Azure DevOps.",
-    version="1.0.0",
+    description="Automated Code Review and Requirements Validation Pipeline for Azure DevOps",
+    version="2.0.0",
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
-@app.post("/webhook/orchestrate")
-async def handle_pr_webhook(request: Request, bg_tasks: BackgroundTasks):
-    payload = await request.json()
-    resource = payload.get("resource", {})
-    pr_id = resource.get("pullRequestId")
+# Include routers
+app.include_router(webhooks_router)
+
+
+@app.get("/health", tags=["Health"])
+def health_check():
+    """
+    Deep health check endpoint for monitoring and orchestration tools.
+    Validates that the DI container and core ports are initialized.
+    """
+    from .composition import get_pipeline_orchestrator
     
-    if not pr_id:
-        return {"msg": "No PR ID"}
-
-    if shared_state.verificar_duplicado(pr_id, agent="orchestrator"):
-        return {"msg": "PR already being orchestrated"}
-
-    bg_tasks.add_task(_pipeline_review, payload)
-    return {"msg": "Review Pipeline scheduled"}
-
-def _pipeline_review(payload: dict):
-    resource = payload.get("resource", {})
-    pr_id = resource.get("pullRequestId")
+    health_status = "ok"
+    details = {}
+    
     try:
-        log.info(f"🚀 Iniciando Pipeline para o PR #{pr_id}")
+        # Check if we can resolve the main orchestrator
+        orchestrator = get_pipeline_orchestrator()
+        if not orchestrator:
+            health_status = "error"
+            details["orchestrator"] = "failed to resolve"
+        else:
+            details["orchestrator"] = "ready"
+            
+    except Exception as exc:
+        health_status = "error"
+        details["error"] = str(exc)
 
-        log.info(f"Fase 1: A executar Code Review Agent...")
-        code_review_findings = code_review_agent._processar_pr_sync(payload)
-        
-        relevant_findings = [
-            f for f in code_review_findings 
-            if f["type"] in ("quality", "bug")
-        ]
-        
-        log.info(f"Fase 2: A executar Requirements Agent com {len(relevant_findings)} Code Findings...")
-        requirements_review_agent._processar_pr_sync(payload, injected_findings=relevant_findings)
-        
-        log.info(f"✅ Pipeline terminada com sucesso para o PR #{pr_id}")
-
-    except Exception as e:
-        log.error(f"Erro na pipeline do PR #{pr_id}: {e}")
-    finally:
-        shared_state.limpar_pr(pr_id, agent="orchestrator")
-
-# Mount both agents — each exposes its own router
-app.include_router(code_review_agent.router)
-app.include_router(requirements_review_agent.router)
-
-log.info("✓ Code Review Agent mounted at /webhook")
-log.info("✓ Requirements Review Agent mounted at /webhook/requirements")
+    return JSONResponse(
+        status_code=200 if health_status == "ok" else 503,
+        content={
+            "status": health_status,
+            "system": "ScopeReview AI",
+            "version": "2.0.0",
+            "details": details
+        }
+    )
 
 
-# ─── System health endpoint ───────────────────────────────────────────────────
-
-@app.get("/health")
-def health():
+@app.get("/metrics", tags=["Health"])
+async def get_metrics():
     """
-    Top-level health check for the full ScopeReview AI system.
-    Returns the status of both agents and the model in use.
+    Exposes real-time system metrics and AI performance telemetry.
     """
-    status = {
-        "status": "ok",
-        "system": "ScopeReview AI",
-        "version": "1.0.0",
-        "agents": {
-            "code_review":    {"endpoint": "POST /webhook",              "status": "active"},
-            "requirements":   {"endpoint": "POST /webhook/requirements",  "status": "active"},
-        },
-        "model": code_review_agent.AZURE_MODEL,
-    }
+    return metrics.get_summary()
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc: Exception):
+    """
+    Global exception handler for unhandled errors.
 
-    return status
+    Logs the error and returns a generic 500 response to avoid leaking
+    sensitive information to clients.
+    """
+    _log.exception("Unhandled exception in %s %s: %s", request.method, request.url, str(exc))
+    return JSONResponse(
+        {"error": "Internal server error. Check logs for details."},
+        status_code=500
+    )

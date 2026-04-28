@@ -1,0 +1,1 @@
+"""ScopeReview AI application package."""
