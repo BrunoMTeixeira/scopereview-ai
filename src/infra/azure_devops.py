@@ -179,8 +179,13 @@ class AzureDevOpsClient:
             changes = resp_changes.json().get("changeEntries", [])
 
             for change in changes[: self._max_files]:
-                if change.get("changeType") in ("rename",):
+                # Skip renames, deletions and folders (we only want clean code content)
+                change_type = change.get("changeType", "").lower()
+                is_folder = change.get("item", {}).get("isFolder", False)
+                
+                if change_type in ("rename", "delete") or is_folder:
                     continue
+                
                 path = change.get("item", {}).get("path", "")
                 if path and not any(path.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
                     conteudo_full = self.get_file_diff(repo_id, project, path, commit_sha)
