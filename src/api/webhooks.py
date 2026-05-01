@@ -33,6 +33,12 @@ def check_webhook_secret(request: Request) -> bool:
     Raises:
         HTTPException: 401 error if authentication fails.
     """
+    # 1. Validate payload size before authentication (protection against DOS)
+    content_length = request.headers.get("Content-Length")
+    if content_length and int(content_length) > _MAX_WEBHOOK_BODY_BYTES:
+        log.error("Payload too large: %s bytes (max allowed: %s)", content_length, _MAX_WEBHOOK_BODY_BYTES)
+        raise HTTPException(status_code=413, detail="Payload too large")
+
     if not settings.WEBHOOK_SECRET:
         return True
 
