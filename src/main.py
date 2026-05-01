@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException
 
@@ -92,7 +92,7 @@ app.include_router(webhooks_router)
 
 
 @app.get("/health", tags=["Health"])
-def health_check():
+def health_check() -> JSONResponse:
     """
     Deep health check endpoint for monitoring and orchestration tools.
     Validates that the DI container and core ports are initialized.
@@ -127,13 +127,13 @@ def health_check():
 
 
 @app.get("/metrics", tags=["Health"])
-async def get_metrics():
+async def get_metrics() -> dict:
     """
     Exposes real-time system metrics and AI performance telemetry.
     """
     return metrics.get_summary()
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """
     Global exception handler for unhandled errors.
 

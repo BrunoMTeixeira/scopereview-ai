@@ -66,7 +66,7 @@ def check_webhook_secret(request: Request) -> bool:
 
 
 @router.post("/orchestrate", dependencies=[Depends(check_webhook_secret)])
-async def webhook_orchestrate(payload: ADOWebhookPayload, background_tasks: BackgroundTasks):
+async def webhook_orchestrate(payload: ADOWebhookPayload, background_tasks: BackgroundTasks) -> JSONResponse:
     """Receives ADO PR events and triggers the sequential pipeline.
 
     Validated via Pydantic model for strict schema enforcement.
