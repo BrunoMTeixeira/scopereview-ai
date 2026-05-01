@@ -282,7 +282,10 @@ class AzureDevOpsClient:
         return ""
 
     def post_comment(self, repo_id: str, pr_id: int, project: str, comment: str) -> None:
-        """Publishes a thread comment on the PR."""
+        """Publishes a summary thread comment on the Pull Request.
+        
+        Uses the ADO Threads API to create a new discussion thread.
+        """
         url = (
             f"https://dev.azure.com/{self._organization}/{project}"
             f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/threads?api-version=7.1"
@@ -291,6 +294,7 @@ class AzureDevOpsClient:
             "comments": [{"parentCommentId": 0, "content": comment, "commentType": 1}],
             "status": 1,
         }
+        log.debug("Posting thread to PR #%s (Project: %s, Length: %d chars)", pr_id, project, len(comment))
         try:
             resp = self._session.post(url, json=payload, timeout=self._request_timeout)
             resp.raise_for_status()

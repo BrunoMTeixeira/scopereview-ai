@@ -48,6 +48,9 @@ class AzureOpenAIClient:
         (429 rate limits, 5xx server errors, network timeouts).
         """
         headers = {
+            # Dual-authentication strategy for compatibility with both:
+            # 1. Regional Azure OpenAI (requires 'api-key')
+            # 2. Azure AI Foundry Serverless (requires 'Authorization: Bearer')
             "api-key": self._api_key,
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -93,8 +96,9 @@ class AzureOpenAIClient:
                 total_tokens = data.get("usage", {}).get("total_tokens", 0)
                 finish_reason = choice.get("finish_reason")
                 if finish_reason == "length":
-                    log.warning(
-                        "LLM response hit max token limit (finish_reason=length); JSON may be truncated "
+                    log.error(
+                        "CRITICAL: LLM response hit max token limit (finish_reason=length). "
+                        "The JSON analysis is likely truncated and may fail parsing. "
                         "(total_tokens=%s).",
                         total_tokens,
                     )
