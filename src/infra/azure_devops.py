@@ -32,6 +32,10 @@ IGNORED_EXTENSIONS = {
 }
 
 
+# Limit file downloads to 1MB to prevent OOM in the container
+_MAX_FILE_DOWNLOAD_BYTES = 1024 * 1024
+
+
 class AzureDevOpsClient:
     """REST adapter for Azure DevOps Services API.
 
@@ -117,13 +121,17 @@ class AzureDevOpsClient:
             f"&versionDescriptor.versionType=commit&api-version=7.1"
         )
         try:
-            # Use stream=True to avoid loading massive files if possible, 
-            # though here we read .text which loads it anyway. 
-            # Senior improvement: we could check Content-Length here.
             resp = self._session.get(url, timeout=self._request_timeout, stream=True)
             if resp.status_code == 404:
                 return ""
             resp.raise_for_status()
+
+            # Senior improvement: Check Content-Length before reading the full body
+            content_length = resp.headers.get("Content-Length")
+            if content_length and int(content_length) > _MAX_FILE_DOWNLOAD_BYTES:
+                log.warning("File %s is too large (%s bytes), skipping download", path, content_length)
+                return f"[FILE TOO LARGE: {content_length} bytes]"
+
             return resp.text
         except requests.RequestException as exc:
             log.warning("Failed to read file %s at %s: %s", path, commit_sha, exc)
