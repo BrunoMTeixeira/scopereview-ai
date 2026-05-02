@@ -73,9 +73,10 @@ def check_webhook_secret(request: Request) -> bool:
 
 @router.post("/orchestrate", dependencies=[Depends(check_webhook_secret)])
 async def webhook_orchestrate(payload: ADOWebhookPayload, background_tasks: BackgroundTasks) -> JSONResponse:
-    """Receives ADO PR events and triggers the sequential pipeline.
+    """Receives ADO PR events and triggers the sequential pipeline asynchronously.
 
     Validated via Pydantic model for strict schema enforcement.
+    Uses BackgroundTasks to mitigate HTTP timeouts from the caller (Issue #21).
     """
     limiter = injector.get(RateLimiter)
     if not limiter.is_allowed():

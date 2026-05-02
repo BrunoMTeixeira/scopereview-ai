@@ -63,7 +63,7 @@ class PipelineOrchestrator:
 
         try:
             start_time = time.time()
-            log.info("Starting orchestrated pipeline for PR #%s", pr_id)
+            log.info("Background task started: Starting orchestrated pipeline for PR #%s", pr_id)
 
             pr_info = self._ado.get_pr_details(repo_id, pr_id, project)
             if not pr_info:
