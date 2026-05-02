@@ -1,5 +1,3 @@
-import random
-import time
 import requests
 from typing import Optional, Tuple
 
@@ -8,12 +6,6 @@ from ..core.logger import get_logger
 from ..core.resilience import with_retry_on_transient_http_errors
 
 log = get_logger("AzureAI")
-
-
-def _backoff_seconds(attempt: int) -> float:
-    """Exponential backoff with jitter to reduce thundering herd on 429."""
-    base = 2**attempt
-    return base + random.uniform(0, base * 0.25)
 
 
 class AzureOpenAIClient:
@@ -41,11 +33,8 @@ class AzureOpenAIClient:
         max_tokens: int = 8000,
     ) -> Tuple[Optional[str], int]:
         """
-        Sends the prompt to Azure AI Foundry, handling retries, exponential backoff,
-        and extracting the JSON string payload. Returns (content, total_tokens).
-
-        This method is decorated with automatic retry logic for transient failures
-        (429 rate limits, 5xx server errors, network timeouts).
+        Sends the prompt to Azure AI Foundry.
+        Handled by the @with_retry_on_transient_http_errors decorator for 429s/5xx.
         """
         headers = {
             # Dual-authentication strategy for compatibility with both:
@@ -75,46 +64,28 @@ class AzureOpenAIClient:
                 "temperature": 0.0,
             }
 
-        for tentativa in range(1, self._max_retries + 1):
-            try:
-                resp = requests.post(self._endpoint, headers=headers, json=payload, timeout=180)
-                if resp.status_code == 429:
-                    wait_time = _backoff_seconds(tentativa)
-                    log.warning(
-                        "Rate limited (429). Retrying in %.1fs... (Attempt %s/%s)",
-                        wait_time,
-                        tentativa,
-                        self._max_retries,
-                    )
-                    time.sleep(wait_time)
-                    continue
+        resp = requests.post(self._endpoint, headers=headers, json=payload, timeout=180)
+        resp.raise_for_status()
+        
+        data = resp.json()
+        choice = data["choices"][0]
+        raw_content = choice["message"]["content"]
+        total_tokens = data.get("usage", {}).get("total_tokens", 0)
+        finish_reason = choice.get("finish_reason")
+        
+        if finish_reason == "length":
+            log.error(
+                "CRITICAL: LLM response hit max token limit (finish_reason=length). "
+                "The JSON analysis is likely truncated and may fail parsing. "
+                "(total_tokens=%s).",
+                total_tokens,
+            )
 
-                resp.raise_for_status()
-                data = resp.json()
-                choice = data["choices"][0]
-                raw_content = choice["message"]["content"]
-                total_tokens = data.get("usage", {}).get("total_tokens", 0)
-                finish_reason = choice.get("finish_reason")
-                if finish_reason == "length":
-                    log.error(
-                        "CRITICAL: LLM response hit max token limit (finish_reason=length). "
-                        "The JSON analysis is likely truncated and may fail parsing. "
-                        "(total_tokens=%s).",
-                        total_tokens,
-                    )
+        start = raw_content.find("{")
+        end = raw_content.rfind("}")
+        if start != -1 and end != -1:
+            sanitized = sanitize_llm_json_fragment(raw_content[start : end + 1])
+            return sanitized, total_tokens
 
-                start = raw_content.find("{")
-                end = raw_content.rfind("}")
-                if start != -1 and end != -1:
-                    sanitized = sanitize_llm_json_fragment(raw_content[start : end + 1])
-                    return sanitized, total_tokens
-
-                log.error("AI response did not contain a valid JSON block.")
-                return None, total_tokens
-
-            except requests.RequestException as e:
-                log.error("API Request failed on attempt %s: %s", tentativa, e)
-                time.sleep(_backoff_seconds(tentativa))
-
-        log.error("All AI retry attempts exhausted.")
-        return None, 0
+        log.error("AI response did not contain a valid JSON block.")
+        return None, total_tokens
