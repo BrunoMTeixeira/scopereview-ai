@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from .logger import get_logger
+
+log = get_logger("DomainPolicy")
+
 _GAP_STATUSES = frozenset({"MISSING", "PARTIAL"})
 
 
@@ -86,6 +90,7 @@ def apply_domain_verdict_rules(result: Dict[str, Any]) -> Dict[str, Any]:
     if llm_verdict == canonical:
         return dict(result)
 
+    log.warning("VERDICT OVERRIDE: IA reported %s, but Domain Policy enforced %s", llm_verdict, canonical)
     out = dict(result)
     out["overall_verdict"] = canonical
     out["verdict_reason"] = _reconcile_reason(
