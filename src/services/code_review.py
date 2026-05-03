@@ -13,12 +13,21 @@ log = get_logger("CodeReview")
 
 
 class CodeReviewService:
-    """Service for conducting automated code reviews using AI and static analysis.
+    """Orchestrates static and AI-based code analysis for Pull Requests.
 
-    This service coordinates the split of code files into manageable blocks,
-    triggers AI analysis for each block, and aggregates findings with
-    deterministic static analysis results.
+    Attributes:
+        _ai: Adapter for the AI model client.
+        _max_high_block: Threshold for high-severity findings to block PR.
+        _max_token_budget: Token consumption limit for AI analysis.
     """
+
+    _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    _SEVERITY_PENALTIES = {
+        "critical": 3.0,
+        "high": 1.5,
+        "medium": 0.5,
+        "low": 0.15,
+    }
 
     def __init__(self, ai: AIModelClientPort, max_high_block: int, max_token_budget: int):
         """Initializes the CodeReviewService.
@@ -143,17 +152,20 @@ class CodeReviewService:
                 vistos.add(key)
                 unique_f.append(f)
 
-        order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        unique_f.sort(key=lambda x: order.get(x.get("severity", "low"), 99))
+        unique_f.sort(key=lambda x: self._SEVERITY_ORDER.get(x.get("severity", "low"), 99))
 
-        penalty = {"critical": 3.0, "high": 1.5, "medium": 0.5, "low": 0.15}
-        total_penalty = sum(penalty.get(f.get("severity", "low"), 0) for f in unique_f)
+        # Deterministic scoring: start at 10 and subtract penalties per finding
+        total_penalty = sum(self._SEVERITY_PENALTIES.get(f.get("severity", "low"), 0) for f in unique_f)
         final_score = max(1, min(10, round(10 - total_penalty)))
 
         sevs_list = [f.get("severity") for f in unique_f]
         num_high = sevs_list.count("high")
         has_critical = "critical" in sevs_list
+        
+        # Approval logic: Block if any Critical, too many High, or Score < 7
         approved = not (has_critical or num_high >= self._max_high_block or final_score < 7)
+        
+        log.info("Code Review Score: %s/10 (Penalty: %.2f) -> Approved: %s", final_score, total_penalty, approved)
 
         return {
             "findings": unique_f,
