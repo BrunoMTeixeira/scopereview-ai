@@ -54,7 +54,8 @@ class CodeReviewService:
         blocos, atual = [], ""
         for i, frag in enumerate(fragmentos):
             atual += frag
-            if len(atual.splitlines()) >= 200 or i == len(fragmentos) - 1:
+            # Increased threshold from 200 to 400 to minimize API calls while maintaining context.
+            if len(atual.splitlines()) >= 400 or i == len(fragmentos) - 1:
                 if atual.strip():
                     blocos.append(atual)
                 atual = ""
