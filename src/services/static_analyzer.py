@@ -97,6 +97,14 @@ class StaticAnalyzer:
                     findings.append(StaticAnalyzer._build_finding(path, i+1, "security", "medium", 
                         "Unvalidated LIMIT parameter in SQL query", "Using LIMIT parameter without checking negative boundaries.", [raw_l.strip()]))
 
+        # ── 10. Hardcoded Secrets ─────────────────────────────────────────────
+        for i, raw_l in enumerate(raw_lines):
+            # Detects assignment of long strings to sensitive-looking variable names
+            if re.search(r'\b(secret|api_key|password|auth_token|access_key|private_key)\b\s*[:=]\s*["\'][a-zA-Z0-9_\-\.]{16,}["\']', raw_l, re.I):
+                if not re.search(r'config|settings|env|os\.environ|dotenv', raw_l, re.I):
+                    findings.append(StaticAnalyzer._build_finding(path, i+1, "security", "critical", 
+                        "Hardcoded secret detected", "Secrets should be loaded from environment variables or a key vault, never hardcoded.", [raw_l.strip()]))
+
         return findings
 
     @staticmethod
