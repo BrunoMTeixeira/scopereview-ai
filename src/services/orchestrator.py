@@ -97,6 +97,11 @@ class PipelineOrchestrator:
             else:
                 log.info("Code Review returned no findings.")
 
+            # CIRCUIT BREAKER: If Phase 1 exceeded budget, do not start Phase 2 (Cost Control)
+            if cr_metrics.get("token_budget_exceeded"):
+                log.warning("Circuit Breaker: Token budget reached in Phase 1. Skipping Requirements Validation for PR #%s.", pr_id)
+                return
+
             log.info("Running Requirements Validation Agent...")
             work_items = self._ado.get_work_items(repo_id, pr_id, project)
             regras_repo = self._ado.get_repo_rules(repo_id, project, commit_sha)
