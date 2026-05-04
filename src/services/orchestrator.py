@@ -89,7 +89,11 @@ class PipelineOrchestrator:
                     model_display_name=self._code_model_display_name,
                 )
                 self._ado.post_comment(repo_id, pr_id, project, cr_markdown)
-                findings_to_inject = [f for f in cr_result.get("findings", []) if f.get("type") in ("quality", "bug")]
+                
+                # SHIFT-LEFT: Capture findings to influence the next phase (Requirements)
+                findings_to_inject = [f for f in cr_result.get("findings", []) if f.get("type") in ("quality", "bug", "security")]
+                if findings_to_inject:
+                    log.info("Shift-Left: Injecting %d findings into Requirements Validation context.", len(findings_to_inject))
             else:
                 log.info("Code Review returned no findings.")
 
