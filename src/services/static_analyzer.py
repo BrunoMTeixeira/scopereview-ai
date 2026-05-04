@@ -85,9 +85,9 @@ class StaticAnalyzer:
 
         # ── 8. PII in log statements ──────────────────────────────────────────
         for i, raw_l in enumerate(raw_lines):
-            if re.search(r'log\.(info|debug|warning|error|critical)\s*\(.*\b(email|password|token|ip_address|phone|nif|ssn)\b', raw_l, re.I):
+            if re.search(r'log\.(info|debug|warning|error|critical)\s*\(.*\b(email|password|token|ip_address|phone|nif|ssn|iban|credit_card|cvv|address)\b', raw_l, re.I):
                 findings.append(StaticAnalyzer._build_finding(path, i+1, "security", "medium", 
-                    "Possible PII exposed in logs", "Logging sensitive data is a security risk.", [raw_l.strip()]))
+                    "Possible PII exposed in logs", "Logging sensitive data (PII) is a security and compliance risk.", [raw_l.strip()]))
 
         # ── 9. Negative number guard for LIMIT/OFFSET ─────────────────────────
         for i, raw_l in enumerate(raw_lines):
@@ -104,6 +104,14 @@ class StaticAnalyzer:
                 if not re.search(r'config|settings|env|os\.environ|dotenv', raw_l, re.I):
                     findings.append(StaticAnalyzer._build_finding(path, i+1, "security", "critical", 
                         "Hardcoded secret detected", "Secrets should be loaded from environment variables or a key vault, never hardcoded.", [raw_l.strip()]))
+
+        # ── 11. SQL Injection Risk ────────────────────────────────────────────
+        for i, raw_l in enumerate(raw_lines):
+            # Detects string formatting/interpolation inside cursor.execute calls
+            if re.search(r'cursor\.execute\s*\(.*(f["\']|%|\.format\()', raw_l, re.I):
+                if any(k in raw_l.upper() for k in ("SELECT", "UPDATE", "DELETE", "INSERT")):
+                    findings.append(StaticAnalyzer._build_finding(path, i+1, "security", "critical", 
+                        "Possible SQL Injection", "Use parameterized queries (?, %s) instead of string formatting.", [raw_l.strip()]))
 
         return findings
 
