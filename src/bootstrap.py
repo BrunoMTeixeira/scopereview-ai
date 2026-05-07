@@ -47,7 +47,10 @@ def bootstrap_dependencies() -> None:
     try:
         # ===== Infrastructure Layer (Ports Implementation) =====
 
-        # Azure AI Clients (for code review and requirements validation)
+        # MULTI-PROVIDER ROUTING (#42)
+        # The architecture dynamically routes tasks to different AI models/providers.
+        # - Code Review (Reasoning intensive): Routed to AZURE_*_CR credentials (e.g., o4-mini)
+        # - Requirements Validation (Context heavy): Routed to AZURE_*_REQ credentials (e.g., DeepSeek-V3.2)
         code_review_ai = AzureOpenAIClient(
             endpoint=settings.AZURE_ENDPOINT_CR,
             api_key=settings.AZURE_API_KEY_CR,
