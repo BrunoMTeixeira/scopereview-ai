@@ -23,7 +23,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 
 # Run as non-root user (security best practice)
-RUN useradd --create-home appuser
+# Create a system group and user, then assign ownership of /app
+RUN groupadd -r appgroup && \
+    useradd -r -g appgroup --create-home appuser && \
+    chown -R appuser:appgroup /app
+
 USER appuser
 
 # Expor porta
