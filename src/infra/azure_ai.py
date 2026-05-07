@@ -24,6 +24,33 @@ class AzureOpenAIClient:
         self._model_name = model_name
         self._max_retries = max_retries
 
+    def _build_payload(self, system_prompt: str, user_prompt: str, max_tokens: int) -> dict:
+        """Constructs the LLM payload, dynamically handling O-series API constraints.
+        
+        O-series reasoning models (o1, o3-mini, o4-mini) do not support 'temperature', 
+        often reject the 'system' role, and require 'max_completion_tokens' instead 
+        of the traditional 'max_tokens'.
+        """
+        model_name = self._model_name
+        if model_name.startswith("o") and (
+            "-mini" in model_name or "o1" in model_name or "o3" in model_name or "o4" in model_name
+        ):
+            return {
+                "model": model_name,
+                "messages": [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}],
+                "max_completion_tokens": max_tokens,
+            }
+        
+        return {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+        }
+
     @with_retry_on_transient_http_errors(max_attempts=3, min_wait=2, max_wait=20)
     def complete(
         self,
@@ -44,25 +71,8 @@ class AzureOpenAIClient:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        model_name = self._model_name
-        if model_name.startswith("o") and (
-            "-mini" in model_name or "o1" in model_name or "o3" in model_name or "o4" in model_name
-        ):
-            payload = {
-                "model": model_name,
-                "messages": [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}],
-                "max_completion_tokens": max_tokens,
-            }
-        else:
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "max_tokens": max_tokens,
-                "temperature": 0.0,
-            }
+        
+        payload = self._build_payload(system_prompt, user_prompt, max_tokens)
 
         resp = requests.post(self._endpoint, headers=headers, json=payload, timeout=180)
         resp.raise_for_status()
