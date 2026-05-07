@@ -1,5 +1,7 @@
 import base64
 import difflib
+import html
+import re
 import requests
 from typing import Dict, List, Optional, Tuple
 
@@ -34,6 +36,21 @@ IGNORED_EXTENSIONS = {
 
 # Limit file downloads to 1MB to prevent OOM in the container
 _MAX_FILE_DOWNLOAD_BYTES = 1024 * 1024
+
+
+def _strip_html(text: str) -> str:
+    """Strips HTML tags from ADO fields to save LLM tokens and improve reasoning."""
+    if not text:
+        return ""
+    # Replace block-level tags with newlines to preserve some structure
+    text = re.sub(r'<(br|/p|/div|/li|/h\d)[^>]*>', '\n', text, flags=re.IGNORECASE)
+    # Remove remaining tags
+    text = re.sub(r'<[^>]+>', ' ', text)
+    # Unescape HTML entities
+    text = html.unescape(text)
+    # Clean up whitespace
+    text = re.sub(r'[ \t]+', ' ', text)
+    return re.sub(r'\n\s*\n+', '\n', text).strip()
 
 
 class AzureDevOpsClient:
@@ -254,8 +271,8 @@ class AzureDevOpsClient:
                             "id": wi_data.get("id"),
                             "title": fields.get("System.Title", ""),
                             "type": fields.get("System.WorkItemType", ""),
-                            "description": fields.get("System.Description", ""),
-                            "acceptance_criteria": fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""),
+                            "description": _strip_html(fields.get("System.Description", "")),
+                            "acceptance_criteria": _strip_html(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")),
                             "url": wi_data.get("_links", {}).get("html", {}).get("href", ""),
                         }
                     )
