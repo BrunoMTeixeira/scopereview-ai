@@ -15,10 +15,10 @@ log = get_logger("Orchestrator")
 class PipelineOrchestrator:
     """Orchestrates the sequential code review and requirements validation pipeline.
 
-    This service coordinates the fetching of PR details from Azure DevOps,
-    triggering the Code Review Agent, and subsequently triggering the
-    Requirements Validation Agent. It ensures that findings from the code
-    review are injected into the requirements validation context.
+    SEQUENTIAL ORCHESTRATION PATTERN (#43):
+    This service coordinates the pipeline by strictly executing Agent 1 (Code Review) 
+    followed by Agent 2 (Requirements Validation). It ensures that deterministic findings 
+    (Shift-Left) and token budgets are passed between agents in a sequential handshake.
     """
 
     def __init__(
