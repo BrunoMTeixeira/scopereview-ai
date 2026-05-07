@@ -94,8 +94,9 @@ app.include_router(webhooks_router)
 @app.get("/health", tags=["Health"])
 def health_check() -> JSONResponse:
     """
-    Deep health check endpoint for monitoring and orchestration tools.
-    Validates that the DI container and core ports are initialized.
+    Deep health check endpoint for monitoring and orchestration tools (Issue #47).
+    Validates that the DI container and all core ports (Azure AI, ADO, Redis) 
+    are instantiated and successfully wired together in the Composition Root.
     """
     from .composition import get_pipeline_orchestrator
     
