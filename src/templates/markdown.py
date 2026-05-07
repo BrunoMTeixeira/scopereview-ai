@@ -105,6 +105,8 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
 
 
 # ─── REQUIREMENTS VALIDATION FORMATTER ────────────────────────────────────────
+# This formatter implements a visual PR summary with progress bars and 
+# language-aware code evidence blocks for failed requirements (Issue #46).
 
 def _progress_bar(requisitos: List[dict]) -> str:
     total = len(requisitos)
