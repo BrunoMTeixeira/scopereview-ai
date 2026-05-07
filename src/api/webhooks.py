@@ -22,8 +22,11 @@ router = APIRouter(prefix="/webhook", tags=["Webhooks"])
 _MAX_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024
 
 
-def check_webhook_secret(request: Request) -> bool:
-    """Validates the webhook secret using Basic Authentication.
+import hashlib
+import hmac
+
+async def check_webhook_secret(request: Request) -> bool:
+    """Validates the webhook secret using HTTPS, Basic Auth, or HMAC Signature.
 
     Args:
         request: The incoming FastAPI request.
@@ -32,7 +35,7 @@ def check_webhook_secret(request: Request) -> bool:
         bool: True if authentication is successful or not required.
 
     Raises:
-        HTTPException: 401 error if authentication fails.
+        HTTPException: 401 error if authentication fails, 403 for insecure connections.
     """
     # 1. Validate payload size before authentication (protection against DOS)
     content_length = request.headers.get("Content-Length")
@@ -40,8 +43,27 @@ def check_webhook_secret(request: Request) -> bool:
         log.error("Payload too large: %s bytes (max allowed: %s)", content_length, _MAX_WEBHOOK_BODY_BYTES)
         raise HTTPException(status_code=413, detail="Payload too large")
 
+    # 2. Enforce HTTPS in production (Network Hardening)
+    if settings.is_production:
+        scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+        if scheme != "https":
+            log.warning("Insecure webhook request rejected (HTTP instead of HTTPS)")
+            raise HTTPException(status_code=403, detail="HTTPS required in production")
+
     if not settings.WEBHOOK_SECRET:
         return True
+
+    # 3. HMAC Signature Validation (if provided by gateway/proxy)
+    hmac_header = request.headers.get("X-Hub-Signature-256")
+    if hmac_header:
+        body = await request.body()
+        expected_mac = hmac.new(settings.WEBHOOK_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(hmac_header.replace("sha256=", ""), expected_mac):
+            log.warning("Webhook HMAC Auth rejected: signature mismatch")
+            raise HTTPException(status_code=401, detail="Invalid HMAC signature")
+        return True
+
+    # 4. Fallback to Basic Auth (Standard Azure DevOps Service Hooks)
 
     auth_header = request.headers.get("Authorization")
     if not auth_header:
