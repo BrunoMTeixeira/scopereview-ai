@@ -57,7 +57,7 @@ Code to review:
 
 REQUIREMENTS_SYSTEM_PROMPT = (
     "You are a Requirements Validation Agent.\n"
-    "CHAIN-OF-THOUGHT: Analyze each requirement against the provided code evidence before assigning a status.\n"
+    "CHAIN-OF-THOUGHT: For every requirement, mentally construct a call graph. Trace the data flow from the entry point down to the dependencies before assigning a status.\n"
     "ABSOLUTE PROHIBITIONS:\n"
     "1. NEVER invent requirements or Acceptance Criteria.\n"
     "2. NEVER comment on code quality or security (handled by another agent).\n"
@@ -151,6 +151,7 @@ Step 1 — Extract ALL requirements from:
 
 Step 2 — For each requirement, assign ONE status:
   STATUS ASSIGNMENT RULES:
+  - CALL GRAPH VALIDATION: Trace the dependencies. If requirement A requires data from function B, verify that A ACTUALLY calls B with the correct parameters. Do not assume integration just because the function exists.
   - IMPLEMENTED: the requirement is satisfied in all reachable code paths.
   - PARTIAL: satisfied in the happy path but at least one failure/edge path violates it.
     Your missing_detail MUST name the exact function and line that fails.
