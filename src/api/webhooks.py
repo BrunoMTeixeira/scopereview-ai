@@ -13,6 +13,7 @@ from ..models.webhooks import ADOWebhookPayload
 from ..core.metrics import metrics
 from ..core.rate_limit import RateLimiter
 from ..composition import get_pipeline_orchestrator, injector
+from ..services.orchestrator import PipelineOrchestrator
 
 log = get_logger("Webhooks")
 router = APIRouter(prefix="/webhook", tags=["Webhooks"])
@@ -71,18 +72,24 @@ def check_webhook_secret(request: Request) -> bool:
     return True
 
 
-@router.post("/orchestrate", dependencies=[Depends(check_webhook_secret)])
-async def webhook_orchestrate(payload: ADOWebhookPayload, background_tasks: BackgroundTasks) -> JSONResponse:
-    """Receives ADO PR events and triggers the sequential pipeline asynchronously.
-
-    Validated via Pydantic model for strict schema enforcement.
-    Uses BackgroundTasks to mitigate HTTP timeouts from the caller (Issue #21).
-    """
+def check_rate_limit() -> None:
     limiter = injector.get(RateLimiter)
     if not limiter.is_allowed():
         log.warning("Rate limit exceeded for webhooks")
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
+
+@router.post("/orchestrate", dependencies=[Depends(check_webhook_secret), Depends(check_rate_limit)])
+async def webhook_orchestrate(
+    payload: ADOWebhookPayload, 
+    background_tasks: BackgroundTasks,
+    orchestrator: PipelineOrchestrator = Depends(get_pipeline_orchestrator)
+) -> JSONResponse:
+    """Receives ADO PR events and triggers the sequential pipeline asynchronously.
+
+    Validated via Pydantic model for strict schema enforcement.
+    Uses BackgroundTasks to mitigate HTTP timeouts from the caller (Issue #21).
+    """
     evento = payload.eventType
     if evento not in ("git.pullrequest.created", "git.pullrequest.updated"):
         return JSONResponse({"status": "ignored", "reason": f"Event type '{evento}' not supported"})
@@ -99,7 +106,6 @@ async def webhook_orchestrate(payload: ADOWebhookPayload, background_tasks: Back
 
     log.info("Received orchestrator webhook for PR #%s (Project: %s)", pr_id, project)
 
-    orchestrator = get_pipeline_orchestrator()
     background_tasks.add_task(orchestrator.process_pr_pipeline, pr_id, repo_id, project)
 
     return JSONResponse(
