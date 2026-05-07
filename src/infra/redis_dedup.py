@@ -1,4 +1,6 @@
-"""Redis-backed pipeline deduplication (distributed TTL lock)."""
+"""Redis-backed pipeline deduplication (distributed TTL lock).
+Migrates stateful deduplication to a scalable distributed cache (Issue #49).
+"""
 
 from __future__ import annotations
 
