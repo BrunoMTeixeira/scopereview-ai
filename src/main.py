@@ -2,7 +2,7 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import HTTPException
+from fastapi.exceptions import HTTPException, RequestValidationError
 
 from .core.config import validate_settings
 from .core.logger import setup_logging, get_logger
@@ -132,6 +132,20 @@ async def get_metrics() -> dict:
     Exposes real-time system metrics and AI performance telemetry.
     """
     return metrics.get_summary()
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """
+    Masks schema validation errors to prevent leaking internal API structure.
+    Returns a generic 400 Bad Request instead of FastAPI's default 422 which leaks schema details.
+    """
+    _log.warning("Payload validation failed for %s %s", request.method, request.url)
+    return JSONResponse(
+        {"error": "Bad Request: Invalid payload structure or missing required fields."},
+        status_code=400
+    )
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """
