@@ -79,6 +79,8 @@ class PipelineOrchestrator:
                 return
 
             log.info("Running Code Review Agent...")
+            # CODE REVIEW: Send only Unified Diffs (mapa_diffs) to the reasoning agent.
+            # This drastically reduces token consumption and focuses the LLM on the actual changes.
             cr_result, cr_metrics = self._code_review.analyze_pr_code(mapa_diffs)
 
             findings_to_inject = []
