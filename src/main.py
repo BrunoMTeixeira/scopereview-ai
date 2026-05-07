@@ -131,6 +131,7 @@ def health_check() -> JSONResponse:
 async def get_metrics() -> dict:
     """
     Exposes real-time system metrics and AI performance telemetry.
+    Exports token consumption, pipeline latency, and success rates for observability.
     """
     return metrics.get_summary()
 
