@@ -55,3 +55,19 @@ def test_unvalidated_limit():
     code = "query = 'SELECT * FROM items LIMIT ?'\ncursor.execute(query, (limit,))"
     findings = StaticAnalyzer.analyze_file("test.py", code)
     assert any("Unvalidated LIMIT parameter in SQL query" in f["title"] for f in findings)
+
+def test_wildcard_import_skip():
+    code = "from math import *\nprint(pi)"
+    findings = StaticAnalyzer.analyze_file("test.py", code)
+    assert not any("Unused import: *" in f["title"] for f in findings)
+
+def test_hardcoded_secrets():
+    code = "api_key = 'abcdef1234567890abcdef'\nconfig_api_key = 'abcdef1234567890abcdef'"
+    findings = StaticAnalyzer.analyze_file("test.py", code)
+    # The first one should be caught, the second one should be ignored because 'config' is in the line
+    assert sum(1 for f in findings if "Hardcoded secret detected" in f["title"]) == 1
+
+def test_sql_injection_risk():
+    code = "cursor.execute(f'SELECT * FROM users WHERE id = {user_id}')\ncursor.execute('SELECT * FROM items')"
+    findings = StaticAnalyzer.analyze_file("test.py", code)
+    assert sum(1 for f in findings if "Possible SQL Injection" in f["title"]) == 1
