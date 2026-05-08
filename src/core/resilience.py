@@ -63,7 +63,7 @@ def with_retry_on_transient_http_errors(
             return True
 
         if isinstance(exception, requests.exceptions.HTTPError):
-            status_code = exception.response.status_code if exception.response else None
+            status_code = getattr(exception.response, "status_code", None) if exception.response else None
             # Retry on 429 (Rate Limit), 500, 502, 503, 504 (Server Errors)
             if status_code in (429, 500, 502, 503, 504):
                 log.warning(f"⚠️  HTTP {status_code} detected, will retry...")
@@ -71,10 +71,9 @@ def with_retry_on_transient_http_errors(
 
         return False
 
+    from tenacity import retry_if_exception
     return retry(
-        retry=retry_if_exception_type(
-            (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError)
-        ),
+        retry=retry_if_exception(should_retry_http_error),
         stop=stop_after_attempt(max_attempts),
         # Exponential backoff (2, 4, 8...) + Random Jitter (0-2s) to prevent thundering herd
         wait=wait_exponential(multiplier=multiplier, min=min_wait, max=max_wait) + wait_random(0, 2),

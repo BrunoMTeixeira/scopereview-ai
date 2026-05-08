@@ -92,7 +92,7 @@ def run_all_gates():
 
     # Gate 3: Unit Tests
     print_step(3, "Unit Tests")
-    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/ -q --disable-warnings", "Unit tests failed")
+    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/ -q --disable-warnings --no-cov", "Unit tests failed")
 
     # Gate 4: Coverage Threshold
     print_step(4, "Coverage (Minimum 90%)")
@@ -100,7 +100,7 @@ def run_all_gates():
 
     # Gate 5: Security Rules
     print_step(5, "Security (Prompt Isolation & PII)")
-    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/services/test_static_analyzer_complete.py tests/unit/services/test_static_analyzer_hardened.py -q --disable-warnings", "Security engine tests failed")
+    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/services/test_static_analyzer_complete.py tests/unit/services/test_static_analyzer_hardened.py -q --disable-warnings --no-cov", "Security engine tests failed")
 
     # Gate 6: Bootstrap
     success &= verify_di_bootstrap()
@@ -110,19 +110,19 @@ def run_all_gates():
 
     # Gate 8: Observability
     print_step(8, "Observability (Metrics & Logging)")
-    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/api/test_observability.py -q --disable-warnings", "Observability tests failed")
+    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/api/test_observability.py -q --disable-warnings --no-cov", "Observability tests failed")
 
     # Gate 9: System Flow
     print_step(9, "System Flow (E2E & Orchestrator)")
-    success &= run_cmd(f"{sys.executable} -m pytest tests/e2e/ tests/system/ tests/integration/ -q --disable-warnings", "End-to-end integration failed")
+    success &= run_cmd(f"{sys.executable} -m pytest tests/e2e/ tests/system/ tests/integration/ -q --disable-warnings --no-cov", "End-to-end integration failed")
 
     # Gate 10: Requirements Parsing
     print_step(10, "Domain Governance (Requirements & Verdicts)")
-    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/domain/ -q --disable-warnings", "Domain logic and policy rules failed")
+    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/domain/ -q --disable-warnings --no-cov", "Domain logic and policy rules failed")
 
     # Gate 11: Webhook Auth Hardening
     print_step(11, "Security (Webhook Hardening & Auth)")
-    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/api/test_security_webhooks.py tests/unit/api/test_webhooks_unit.py -q --disable-warnings", "Webhook security checks failed")
+    success &= run_cmd(f"{sys.executable} -m pytest tests/unit/api/test_security_webhooks.py tests/unit/api/test_webhooks_unit.py -q --disable-warnings --no-cov", "Webhook security checks failed")
 
     print(f"\n{Colors.BOLD}======================================================={Colors.ENDC}")
     elapsed = time.time() - start_time
