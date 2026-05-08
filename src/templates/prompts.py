@@ -213,5 +213,3 @@ Respond ONLY with valid JSON — no markdown, no extra text:
   "verdict_reason": "one sentence",
   "implementation_summary": "2-3 sentences"
 }}"""
-
-

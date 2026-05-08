@@ -1,6 +1,8 @@
 import base64
 import json
 import secrets
+import hashlib
+import hmac
 
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
@@ -21,14 +23,8 @@ router = APIRouter(prefix="/webhook", tags=["Webhooks"])
 # Azure DevOps service hook payloads are typically < 100 KiB; cap to limit abuse.
 _MAX_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024
 
-
-import hashlib
-import hmac
-
 async def check_webhook_secret(request: Request) -> bool:
     """Validates the webhook secret using HTTPS, Basic Auth, or HMAC Signature.
-
-    Args:
         request: The incoming FastAPI request.
 
     Returns:
