@@ -225,7 +225,7 @@ def format_requirements_review(
             src = SOURCE_LABEL.get(r.get("source", ""), r.get("source", ""))
             emoji = STATUS_EMOJI.get(r.get("status", "MISSING"), "❌")
             prio = PRIORITY_LABEL.get(r.get("priority") or "", r.get("priority") or "—")
-            desc = r.get("description", "")
+            desc = r.get("description", "") or r.get("id", "—")
             desc = desc[:90] + "…" if len(desc) > 90 else desc
             lines.append(f"| `{rid}` | {prio} | {src} | {emoji} | {desc} |")
         lines += ["", "---", ""]
@@ -264,7 +264,10 @@ def format_requirements_review(
                 rid = r.get("id", "?")
                 desc = r.get("description", "").replace("\n", " ").strip()
                 desc = desc[:115] + "…" if len(desc) > 115 else desc
-                lines.append(f"- **`{rid}`** — {desc}")
+                if desc:
+                    lines.append(f"- **`{rid}`** — {desc}")
+                else:
+                    lines.append(f"- **`{rid}`** — ✅")
             lines += [""]
 
     time_val = metrics.get("time", 0)

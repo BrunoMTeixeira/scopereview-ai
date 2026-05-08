@@ -152,12 +152,14 @@ Step 3 — Verdict:
 - NO_REQUIREMENTS: no requirements found
 
 RULES:
-- evidence_code: array of strings with exact snippet
-- PARTIAL missing_detail must include: function/line, what's wrong, concrete fix
+- IMPLEMENTED: emit COMPACT object (no evidence, no description — saves tokens)
+- PARTIAL/MISSING: emit FULL object with evidence_code + missing_detail
+- missing_detail must include: function/line, what's wrong, concrete fix
   BAD: "Logging inconsistent" → GOOD: "export_user_data() L163: print() instead of log.info()"
 - No code quality/security comments (separate agent)
 - No invented requirements
 - UNVERIFIABLE → provide testing hint
+- description: ≤20 words (requirement as stated, not full AC text)
 
 JSON only:
 {{
@@ -165,21 +167,19 @@ JSON only:
     {{"id": 1, "title": "str", "type": "str", "has_acceptance_criteria": true, "priority": "MUST"}}
   ],
   "requirements": [
+    {{"id": "WI-42-AC-01", "status": "IMPLEMENTED", "priority": "MUST", "source": "acceptance_criteria"}},
     {{
-      "id": "WI-42-AC-01",
-      "work_item_id": 42,
-      "source": "acceptance_criteria",
-      "description": "requirement as stated",
+      "id": "WI-42-AC-02",
       "status": "PARTIAL",
       "priority": "MUST",
+      "source": "acceptance_criteria",
+      "description": "≤20 words",
       "evidence_file": "file",
       "evidence_line": 1,
       "evidence_code": ["line 1"],
-      "missing_detail": "what is absent",
-      "manual_test_hint": null
+      "missing_detail": "function+line, what is absent, concrete fix"
     }}
   ],
   "overall_verdict": "NEEDS_WORK",
-  "verdict_reason": "one sentence",
-  "implementation_summary": "2-3 sentences"
+  "verdict_reason": "one sentence"
 }}"""
