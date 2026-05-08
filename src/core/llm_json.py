@@ -18,11 +18,11 @@ log = get_logger("LLMJson")
 def sanitize_llm_json_fragment(raw: str) -> str:
     """Fix common invalid escapes, trailing commas, and unescaped control chars."""
     # 1. Fix single backslashes that are not part of a valid escape sequence
-    fixed = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', raw)
+    fixed = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", raw)
     # 2. Fix trailing commas in objects/arrays
-    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
     # 3. Strip ASCII control characters (0-31) except for valid ones like \n, \r, \t
-    fixed = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', fixed)
+    fixed = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", fixed)
     return fixed
 
 

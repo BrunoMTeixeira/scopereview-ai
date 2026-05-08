@@ -16,8 +16,8 @@ class PipelineOrchestrator:
     """Orchestrates the sequential code review and requirements validation pipeline.
 
     SEQUENTIAL ORCHESTRATION PATTERN (#43):
-    This service coordinates the pipeline by strictly executing Agent 1 (Code Review) 
-    followed by Agent 2 (Requirements Validation). It ensures that deterministic findings 
+    This service coordinates the pipeline by strictly executing Agent 1 (Code Review)
+    followed by Agent 2 (Requirements Validation). It ensures that deterministic findings
     (Shift-Left) and token budgets are passed between agents in a sequential handshake.
     """
 
@@ -91,17 +91,25 @@ class PipelineOrchestrator:
                     model_display_name=self._code_model_display_name,
                 )
                 self._ado.post_comment(repo_id, pr_id, project, cr_markdown)
-                
+
                 # SHIFT-LEFT: Capture findings to influence the next phase (Requirements)
-                findings_to_inject = [f for f in cr_result.get("findings", []) if f.get("type") in ("quality", "bug", "security")]
+                findings_to_inject = [
+                    f for f in cr_result.get("findings", []) if f.get("type") in ("quality", "bug", "security")
+                ]
                 if findings_to_inject:
-                    log.info("Shift-Left: Injecting %d findings into Requirements Validation context.", len(findings_to_inject))
+                    log.info(
+                        "Shift-Left: Injecting %d findings into Requirements Validation context.",
+                        len(findings_to_inject),
+                    )
             else:
                 log.info("Code Review returned no findings.")
 
             # CIRCUIT BREAKER: If Phase 1 exceeded budget, do not start Phase 2 (Cost Control)
             if cr_metrics.get("token_budget_exceeded"):
-                log.warning("Circuit Breaker: Token budget reached in Phase 1. Skipping Requirements Validation for PR #%s.", pr_id)
+                log.warning(
+                    "Circuit Breaker: Token budget reached in Phase 1. Skipping Requirements Validation for PR #%s.",
+                    pr_id,
+                )
                 return
 
             log.info("Running Requirements Validation Agent...")
@@ -125,7 +133,7 @@ class PipelineOrchestrator:
                 )
                 self._ado.post_comment(repo_id, pr_id, project, req_markdown)
                 log.info("Pipeline completed for PR #%s (code review + requirements).", pr_id)
-                
+
                 # Record metrics
                 total_tokens = cr_metrics.get("tokens", 0) + req_metrics.get("tokens", 0)
                 latency = (time.time() - start_time) * 1000  # ms

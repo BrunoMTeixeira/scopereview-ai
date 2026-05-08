@@ -3,6 +3,7 @@
 This module provides environment-aware configuration with fail-fast validation
 for production deployments while allowing flexibility for development/testing.
 """
+
 import base64
 import os
 from typing import Optional
@@ -87,8 +88,7 @@ class Settings(BaseSettings):
         if not v:
             if environment == "production":
                 raise ValueError(
-                    f"{field_name} is required in production mode. "
-                    f"Set ENVIRONMENT=dev for local development."
+                    f"{field_name} is required in production mode. " f"Set ENVIRONMENT=dev for local development."
                 )
             return v
 
@@ -96,8 +96,7 @@ class Settings(BaseSettings):
         if not v.startswith("https://"):
             if environment == "production":
                 raise ValueError(
-                    f"{field_name} must use HTTPS in production. "
-                    f"For local HTTP mocks, set ENVIRONMENT=dev."
+                    f"{field_name} must use HTTPS in production. " f"For local HTTP mocks, set ENVIRONMENT=dev."
                 )
 
         return v
@@ -154,9 +153,7 @@ def load_settings() -> Settings:
             msg = error["msg"]
             error_msg += f"  • {field}: {msg}\n"
 
-        error_msg += (
-            "\n💡 Tip: Set ENVIRONMENT=dev in .env for local development to bypass production validations.\n"
-        )
+        error_msg += "\n💡 Tip: Set ENVIRONMENT=dev in .env for local development to bypass production validations.\n"
 
         # In production mode, fail fast
         if os.getenv("ENVIRONMENT", "production").lower() == "production":

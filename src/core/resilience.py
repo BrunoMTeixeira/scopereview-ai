@@ -6,6 +6,7 @@ This module provides decorators and retry logic for:
 
 Uses tenacity library for exponential backoff with jitter.
 """
+
 from functools import wraps
 from typing import Callable, Any
 
@@ -109,8 +110,7 @@ def with_fallback(fallback_value: Any) -> Callable:
                 return func(*args, **kwargs)
             except Exception as e:
                 log.error(
-                    f"❌ All retry attempts exhausted for {func.__name__}. "
-                    f"Returning fallback value. Error: {e}"
+                    f"❌ All retry attempts exhausted for {func.__name__}. " f"Returning fallback value. Error: {e}"
                 )
                 return fallback_value
 

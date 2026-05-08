@@ -31,9 +31,7 @@ class RequirementsReviewService:
         """
         self._ai = ai
         self._max_completion_tokens = (
-            max_completion_tokens
-            if max_completion_tokens is not None
-            else settings.REQUIREMENTS_MAX_COMPLETION_TOKENS
+            max_completion_tokens if max_completion_tokens is not None else settings.REQUIREMENTS_MAX_COMPLETION_TOKENS
         )
 
     def validate_requirements(

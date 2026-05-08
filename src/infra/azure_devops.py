@@ -43,14 +43,14 @@ def _strip_html(text: str) -> str:
     if not text:
         return ""
     # Replace block-level tags with newlines to preserve some structure
-    text = re.sub(r'<(br|/p|/div|/li|/h\d)[^>]*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r"<(br|/p|/div|/li|/h\d)[^>]*>", "\n", text, flags=re.IGNORECASE)
     # Remove remaining tags
-    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r"<[^>]+>", " ", text)
     # Unescape HTML entities
     text = html.unescape(text)
     # Clean up whitespace
-    text = re.sub(r'[ \t]+', ' ', text)
-    return re.sub(r'\n\s*\n+', '\n', text).strip()
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n\s*\n+", "\n", text).strip()
 
 
 class AzureDevOpsClient:
@@ -199,10 +199,10 @@ class AzureDevOpsClient:
                 # Skip renames, deletions and folders (we only want clean code content)
                 change_type = change.get("changeType", "").lower()
                 is_folder = change.get("item", {}).get("isFolder", False)
-                
+
                 if change_type in ("rename", "delete") or is_folder:
                     continue
-                
+
                 path = change.get("item", {}).get("path", "")
                 if path and not any(path.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
                     conteudo_full = self.get_file_diff(repo_id, project, path, commit_sha)
@@ -272,7 +272,9 @@ class AzureDevOpsClient:
                             "title": fields.get("System.Title", ""),
                             "type": fields.get("System.WorkItemType", ""),
                             "description": _strip_html(fields.get("System.Description", "")),
-                            "acceptance_criteria": _strip_html(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")),
+                            "acceptance_criteria": _strip_html(
+                                fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
+                            ),
                             "url": wi_data.get("_links", {}).get("html", {}).get("href", ""),
                         }
                     )
@@ -300,7 +302,7 @@ class AzureDevOpsClient:
 
     def post_comment(self, repo_id: str, pr_id: int, project: str, comment: str) -> None:
         """Publishes a summary thread comment on the Pull Request.
-        
+
         Uses the ADO Threads API to create a new discussion thread.
         """
         url = (

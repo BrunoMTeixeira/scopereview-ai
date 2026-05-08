@@ -15,6 +15,7 @@ CODE_REVIEW_SYSTEM_PROMPT = (
     "Respond only in valid JSON."
 )
 
+
 def build_code_review_prompt(caminho: str, bloco: str) -> str:
     # Priority order based on Goldman et al. (2025):
     # Bugs and security findings have a higher Human Acceptance Rate (HAR) than architectural suggestions.
@@ -68,6 +69,7 @@ REQUIREMENTS_SYSTEM_PROMPT = (
     "Respond ONLY in valid JSON."
 )
 
+
 def format_work_items_for_prompt(work_items: List[dict]) -> str:
     """Format work items gracefully."""
     secoes = []
@@ -84,21 +86,29 @@ def format_work_items_for_prompt(work_items: List[dict]) -> str:
     return "\n\n".join(secoes)
 
 
-def build_requirements_prompt(pr_info: dict, work_items: List[dict],
-                              regras_repo: str, mapa_ficheiros: Dict[str, str], injected_findings: list = None) -> str:
+def build_requirements_prompt(
+    pr_info: dict,
+    work_items: List[dict],
+    regras_repo: str,
+    mapa_ficheiros: Dict[str, str],
+    injected_findings: list = None,
+) -> str:
     wi_section = format_work_items_for_prompt(work_items)
     regras_section = f"\n{regras_repo}" if regras_repo else "(No repository rules file found)"
-    codigo_section = "\n".join([
-        f"\n--- FILE: {path} ---\n{content}"
-        for path, content in mapa_ficheiros.items()
-    ]) if mapa_ficheiros else "(No code changes provided)"
+    codigo_section = (
+        "\n".join([f"\n--- FILE: {path} ---\n{content}" for path, content in mapa_ficheiros.items()])
+        if mapa_ficheiros
+        else "(No code changes provided)"
+    )
     pr_desc = pr_info.get("description", "") or "(No PR description provided)"
 
     if injected_findings:
-        findings_str = "\n".join([
-            f"- [{f.get('severity', '').upper()}] File {f.get('file')}, Line {f.get('line')}: {f.get('title')} - {f.get('description')}"
-            for f in injected_findings
-        ])
+        findings_str = "\n".join(
+            [
+                f"- [{f.get('severity', '').upper()}] File {f.get('file')}, Line {f.get('line')}: {f.get('title')} - {f.get('description')}"
+                for f in injected_findings
+            ]
+        )
         code_review_context = f"""
 === CODE REVIEW STATIC FINDINGS ===
 The Code Review agent has already analyzed this PR and found the following issues.

@@ -41,10 +41,7 @@ class SimpleDependencyInjector:
             >>> injector.register(AIModelClientPort, AzureOpenAIClient(...))
         """
         if not isinstance(instance, service_type):
-            raise TypeError(
-                f"Instance of {service_type.__name__} expected, "
-                f"got {type(instance).__name__}"
-            )
+            raise TypeError(f"Instance of {service_type.__name__} expected, " f"got {type(instance).__name__}")
 
         if service_type in self._registry:
             _log.warning(
@@ -75,9 +72,7 @@ class SimpleDependencyInjector:
         """
         # Check test overrides first
         if service_type in self._overrides:
-            _log.debug(
-                "Retrieved override for service: %s", service_type.__name__
-            )
+            _log.debug("Retrieved override for service: %s", service_type.__name__)
             return self._overrides[service_type]
 
         # Then check main registry
@@ -104,17 +99,14 @@ class SimpleDependencyInjector:
         """
         if not isinstance(instance, service_type):
             _log.warning(
-                "Override instance of %s is not a strict type match. "
-                "Type: %s, Expected: %s",
+                "Override instance of %s is not a strict type match. " "Type: %s, Expected: %s",
                 service_type.__name__,
                 type(instance).__name__,
                 service_type.__name__,
             )
 
         self._overrides[service_type] = instance
-        _log.info(
-            "Registered test override for service: %s", service_type.__name__
-        )
+        _log.info("Registered test override for service: %s", service_type.__name__)
 
     def clear_overrides(self) -> None:
         """

@@ -60,11 +60,7 @@ async def lifespan(app: FastAPI):
         _log.info("=" * 80)
 
     except Exception as exc:
-        _log.critical(
-            "Application startup failed: %s",
-            str(exc),
-            exc_info=True
-        )
+        _log.critical("Application startup failed: %s", str(exc), exc_info=True)
         raise
 
     # Application runs here (between startup and shutdown)
@@ -95,14 +91,14 @@ app.include_router(webhooks_router)
 def health_check() -> JSONResponse:
     """
     Deep health check endpoint for monitoring and orchestration tools (Issue #47).
-    Validates that the DI container and all core ports (Azure AI, ADO, Redis) 
+    Validates that the DI container and all core ports (Azure AI, ADO, Redis)
     are instantiated and successfully wired together in the Composition Root.
     """
     from .composition import get_pipeline_orchestrator
-    
+
     health_status = "ok"
     details = {}
-    
+
     try:
         # Check if we can resolve the main orchestrator
         orchestrator = get_pipeline_orchestrator()
@@ -111,19 +107,14 @@ def health_check() -> JSONResponse:
             details["orchestrator"] = "failed to resolve"
         else:
             details["orchestrator"] = "ready"
-            
+
     except Exception as exc:
         health_status = "error"
         details["error"] = str(exc)
 
     return JSONResponse(
         status_code=200 if health_status == "ok" else 503,
-        content={
-            "status": health_status,
-            "system": "ScopeReview AI",
-            "version": "2.0.0",
-            "details": details
-        }
+        content={"status": health_status, "system": "ScopeReview AI", "version": "2.0.0", "details": details},
     )
 
 
@@ -144,9 +135,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """
     _log.warning("Payload validation failed for %s %s", request.method, request.url)
     return JSONResponse(
-        {"error": "Bad Request: Invalid payload structure or missing required fields."},
-        status_code=400
+        {"error": "Bad Request: Invalid payload structure or missing required fields."}, status_code=400
     )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -157,7 +148,4 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     sensitive information to clients.
     """
     _log.exception("Unhandled exception in %s %s: %s", request.method, request.url, str(exc))
-    return JSONResponse(
-        {"error": "Internal server error. Check logs for details."},
-        status_code=500
-    )
+    return JSONResponse({"error": "Internal server error. Check logs for details."}, status_code=500)

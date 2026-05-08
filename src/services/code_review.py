@@ -162,10 +162,10 @@ class CodeReviewService:
         sevs_list = [f.get("severity") for f in unique_f]
         num_high = sevs_list.count("high")
         has_critical = "critical" in sevs_list
-        
+
         # Approval logic: Block if any Critical, too many High, or Score < 7
         approved = not (has_critical or num_high >= self._max_high_block or final_score < 7)
-        
+
         log.info("Code Review Score: %s/10 (Penalty: %.2f) -> Approved: %s", final_score, total_penalty, approved)
 
         return {

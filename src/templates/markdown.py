@@ -4,7 +4,12 @@ from collections import Counter
 # ─── CONSTANTS & LABELS ───────────────────────────────────────────────────────
 
 STATUS_EMOJI = {"IMPLEMENTED": "✅", "PARTIAL": "⚠️", "MISSING": "❌", "UNVERIFIABLE": "🔍"}
-STATUS_LABEL = {"IMPLEMENTED": "Implemented", "PARTIAL": "Partial", "MISSING": "Missing", "UNVERIFIABLE": "Needs testing"}
+STATUS_LABEL = {
+    "IMPLEMENTED": "Implemented",
+    "PARTIAL": "Partial",
+    "MISSING": "Missing",
+    "UNVERIFIABLE": "Needs testing",
+}
 STATUS_ORDER = {"MISSING": 0, "PARTIAL": 1, "UNVERIFIABLE": 2, "IMPLEMENTED": 3}
 SOURCE_LABEL = {
     "acceptance_criteria": "Acceptance Criteria",
@@ -16,9 +21,15 @@ SOURCE_LABEL = {
 PRIORITY_LABEL = {"MUST": "Must", "SHOULD": "Should", "COULD": "Could"}
 
 LANG_MAP = {
-    "py": "python", "js": "javascript", "ts": "typescript",
-    "cs": "csharp", "java": "java", "go": "go", "cpp": "cpp",
+    "py": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "cs": "csharp",
+    "java": "java",
+    "go": "go",
+    "cpp": "cpp",
 }
+
 
 def _linguagem(caminho: str) -> str:
     ext = caminho.rsplit(".", 1)[-1].lower() if "." in caminho else ""
@@ -27,10 +38,12 @@ def _linguagem(caminho: str) -> str:
 
 # ─── CODE REVIEW FORMATTER ────────────────────────────────────────────────────
 
+
 def _score_gauge(score: int) -> str:
     filled = "█" * score
     empty = "░" * (10 - score)
     return f"`{filled}{empty}`  **{score} / 10**"
+
 
 def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> str:
     findings = res.get("findings", [])
@@ -43,8 +56,10 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
 
     linhas_tabela = [
         "## 🔍 Code Review",
-        f"> **ScopeReview AI**  ·  `{model_display_name}`  ·  Automated static analysis{budget_note}", "",
-        "| | |", "|:--|:--|",
+        f"> **ScopeReview AI**  ·  `{model_display_name}`  ·  Automated static analysis{budget_note}",
+        "",
+        "| | |",
+        "|:--|:--|",
         f"| **Score** | {_score_gauge(res.get('security_score', 10))} |",
         f"| **Verdict** | {'✅  Approved — no critical/high issues found.' if res.get('approve') else '⛔  Review required — one or more issues must be addressed before merging.'} |",
         "",
@@ -53,7 +68,9 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
     ]
 
     count = Counter(f.get("severity", "low") for f in findings)
-    linhas_tabela.append(f"| {count.get('critical', 0)} | {count.get('high', 0)} | {count.get('medium', 0)} | {count.get('low', 0)} |")
+    linhas_tabela.append(
+        f"| {count.get('critical', 0)} | {count.get('high', 0)} | {count.get('medium', 0)} | {count.get('low', 0)} |"
+    )
 
     lines = linhas_tabela + ["", "### Findings", ""]
 
@@ -64,9 +81,14 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
         lines += [f"**{idx} · {emoji} {sev.upper()} · {tipo} · `{f.get('file', '?')}:{f.get('line', '?')}`**", ""]
 
         titulo = f.get("title")
-        if titulo: lines += [f"*{titulo}*", ""]
+        if titulo:
+            lines += [f"*{titulo}*", ""]
 
-        vuln_code = "\n".join(f.get("vulnerable_code", [])) if isinstance(f.get("vulnerable_code"), list) else f.get("vulnerable_code", "")
+        vuln_code = (
+            "\n".join(f.get("vulnerable_code", []))
+            if isinstance(f.get("vulnerable_code"), list)
+            else f.get("vulnerable_code", "")
+        )
         fixed_lines = f.get("fixed_code") or f.get("suggestion_code") or []
         if isinstance(fixed_lines, list):
             fixed_code = "\n".join(fixed_lines)
@@ -98,24 +120,27 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
             lines.append(f"- {s}")
         lines += [""]
 
-    time_val = metrics.get('time', 0)
-    tokens_val = metrics.get('tokens', 0)
+    time_val = metrics.get("time", 0)
+    tokens_val = metrics.get("tokens", 0)
     lines += ["---", "", f"<sub>⏱ {time_val}s · {tokens_val:,} tokens · ScopeReview AI v2.0</sub>"]
     return "\n".join(lines)
 
 
 # ─── REQUIREMENTS VALIDATION FORMATTER ────────────────────────────────────────
-# This formatter implements a visual PR summary with progress bars and 
+# This formatter implements a visual PR summary with progress bars and
 # language-aware code evidence blocks for failed requirements (Issue #46).
+
 
 def _progress_bar(requisitos: List[dict]) -> str:
     total = len(requisitos)
     done = sum(1 for r in requisitos if r.get("status") == "IMPLEMENTED")
-    if total == 0: return "—"
+    if total == 0:
+        return "—"
     pct = round(done / total * 100)
     filled = round(done / total * 10)
     bar = f"`{'█' * filled}{'░' * (10 - filled)}`"
     return f"{bar}  **{done} / {total}**  ({pct}%)"
+
 
 def format_requirements_review(
     resultado: dict,
@@ -144,18 +169,26 @@ def format_requirements_review(
     contagem = Counter(r.get("status") for r in requisitos)
 
     lines = [
-        "## 📋  Requirements Validation", "",
-        f"> **ScopeReview AI**  ·  `{model_display_name}`  ·  Requirements analysis", "",
-        "---", "",
-        "| | |", "|:--|:--|",
+        "## 📋  Requirements Validation",
+        "",
+        f"> **ScopeReview AI**  ·  `{model_display_name}`  ·  Requirements analysis",
+        "",
+        "---",
+        "",
+        "| | |",
+        "|:--|:--|",
         f"| **Verdict** | {verdict} |",
         f"| **Author** | {pr_info.get('author', '—')} |",
-        f"| **Progress** | {_progress_bar(requisitos)} |", "",
-        "| ✅ Implemented | ⚠️ Partial | ❌ Missing | 🔍 Needs Testing |", "|:--:|:--:|:--:|:--:|",
-        f"| {contagem.get('IMPLEMENTED', 0)} | {contagem.get('PARTIAL', 0)} | {contagem.get('MISSING', 0)} | {contagem.get('UNVERIFIABLE', 0)} |", "",
+        f"| **Progress** | {_progress_bar(requisitos)} |",
+        "",
+        "| ✅ Implemented | ⚠️ Partial | ❌ Missing | 🔍 Needs Testing |",
+        "|:--:|:--:|:--:|:--:|",
+        f"| {contagem.get('IMPLEMENTED', 0)} | {contagem.get('PARTIAL', 0)} | {contagem.get('MISSING', 0)} | {contagem.get('UNVERIFIABLE', 0)} |",
+        "",
     ]
 
-    if sumario: lines += [f"> {sumario}", ""]
+    if sumario:
+        lines += [f"> {sumario}", ""]
 
     # Display Domain Policy override notice when the deterministic engine corrected the LLM verdict
     if verdict_reason and "[Policy:" in verdict_reason:
@@ -164,7 +197,12 @@ def format_requirements_review(
     lines += ["---", ""]
 
     if wi_info:
-        lines += ["### Linked Work Items", "", "| ID | Type | Priority | Title | Acceptance Criteria |", "|--:|:--|:--:|:--|:--:|"]
+        lines += [
+            "### Linked Work Items",
+            "",
+            "| ID | Type | Priority | Title | Acceptance Criteria |",
+            "|--:|:--|:--:|:--|:--:|",
+        ]
         for wi in wi_info:
             has_ac = "✅" if wi.get("has_acceptance_criteria") else "—"
             prio = PRIORITY_LABEL.get(wi.get("priority") or "", wi.get("priority") or "—")
@@ -174,7 +212,12 @@ def format_requirements_review(
     if not requisitos:
         lines += ["### Requirements", "", "No requirements could be extracted.", ""]
     else:
-        lines += ["### Requirements", "", "| ID | Priority | Source | Status | Requirement |", "|:--|:--:|:--|:--:|:--|"]
+        lines += [
+            "### Requirements",
+            "",
+            "| ID | Priority | Source | Status | Requirement |",
+            "|:--|:--:|:--|:--:|:--|",
+        ]
         for r in requisitos_ord:
             rid = r.get("id", "?")
             src = SOURCE_LABEL.get(r.get("source", ""), r.get("source", ""))
@@ -203,10 +246,12 @@ def format_requirements_review(
                     lines += [f"```{lang}", code_str, "```", ""]
 
                 desc = r.get("description", "")
-                if desc: lines += [f"> {desc}", ""]
+                if desc:
+                    lines += [f"> {desc}", ""]
 
                 missing = r.get("missing_detail", "")
-                if missing: lines += [f"> **Missing Detail:** {missing}", ""]
+                if missing:
+                    lines += [f"> **Missing Detail:** {missing}", ""]
 
                 lines += ["---", ""]
 
@@ -215,12 +260,12 @@ def format_requirements_review(
             lines += ["### ✅ Implemented", ""]
             for r in implemented:
                 rid = r.get("id", "?")
-                desc = r.get("description", "").replace('\n', ' ').strip()
+                desc = r.get("description", "").replace("\n", " ").strip()
                 desc = desc[:115] + "…" if len(desc) > 115 else desc
                 lines.append(f"- **`{rid}`** — {desc}")
             lines += [""]
 
-    time_val = metrics.get('time', 0)
-    tokens_val = metrics.get('tokens', 0)
+    time_val = metrics.get("time", 0)
+    tokens_val = metrics.get("tokens", 0)
     lines += ["---", "", f"<sub>⏱ {time_val}s · {tokens_val:,} tokens · ScopeReview AI v2.0</sub>"]
     return "\n".join(lines)

@@ -9,7 +9,7 @@ log = get_logger("Dedup")
 
 class InMemoryPipelineDedup:
     """Process-local duplicate guard (TTL).
-    
+
     Not shared across replicas — inject a Redis-backed adapter for scale-out.
     Thread-safe via threading.Lock.
     """

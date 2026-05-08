@@ -23,6 +23,7 @@ router = APIRouter(prefix="/webhook", tags=["Webhooks"])
 # Azure DevOps service hook payloads are typically < 100 KiB; cap to limit abuse.
 _MAX_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024
 
+
 async def check_webhook_secret(request: Request) -> bool:
     """Validates the webhook secret using HTTPS, Basic Auth, or HMAC Signature.
         request: The incoming FastAPI request.
@@ -99,9 +100,9 @@ def check_rate_limit() -> None:
 
 @router.post("/orchestrate", dependencies=[Depends(check_webhook_secret), Depends(check_rate_limit)])
 async def webhook_orchestrate(
-    payload: ADOWebhookPayload, 
+    payload: ADOWebhookPayload,
     background_tasks: BackgroundTasks,
-    orchestrator: PipelineOrchestrator = Depends(get_pipeline_orchestrator)
+    orchestrator: PipelineOrchestrator = Depends(get_pipeline_orchestrator),
 ) -> JSONResponse:
     """Receives ADO PR events and triggers the sequential pipeline asynchronously.
 
@@ -131,10 +132,6 @@ async def webhook_orchestrate(
         content={
             "status": "accepted",
             "message": f"Orchestrator Pipeline started for PR {pr_id}",
-            "details": {
-                "pr_id": pr_id,
-                "project": project,
-                "event": evento
-            }
-        }
+            "details": {"pr_id": pr_id, "project": project, "event": evento},
+        },
     )

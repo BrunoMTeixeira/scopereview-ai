@@ -99,15 +99,10 @@ def bootstrap_dependencies() -> None:
             )
         else:
             dedup = InMemoryPipelineDedup(ttl_seconds=settings.DEDUP_SECONDS)
-            _log.info(
-                "Using in-memory deduplication (single-process mode)"
-            )
+            _log.info("Using in-memory deduplication (single-process mode)")
 
         # Rate Limiter
-        limiter = RateLimiter(
-            requests_limit=settings.WEBHOOK_RATE_LIMIT,
-            window_seconds=60
-        )
+        limiter = RateLimiter(requests_limit=settings.WEBHOOK_RATE_LIMIT, window_seconds=60)
         _log.info("Initialized RateLimiter (limit: %s/min)", settings.WEBHOOK_RATE_LIMIT)
 
         # ===== Domain Services Layer =====
@@ -155,14 +150,14 @@ def bootstrap_dependencies() -> None:
         register_service(RateLimiter, limiter)
         # We register the singleton metrics for visibility in DI
         from .core.metrics import SystemMetrics
+
         register_service(SystemMetrics, metrics)
 
         _log.info("✓ Dependencies bootstrapped successfully")
 
     except Exception as exc:
         _log.critical(
-            "Failed to bootstrap dependencies: %s. "
-            "Application startup aborted.",
+            "Failed to bootstrap dependencies: %s. " "Application startup aborted.",
             str(exc),
             exc_info=True,
         )

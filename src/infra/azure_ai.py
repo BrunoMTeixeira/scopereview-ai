@@ -26,9 +26,9 @@ class AzureOpenAIClient:
 
     def _build_payload(self, system_prompt: str, user_prompt: str, max_tokens: int) -> dict:
         """Constructs the LLM payload, dynamically handling O-series API constraints.
-        
-        O-series reasoning models (o1, o3-mini, o4-mini) do not support 'temperature', 
-        often reject the 'system' role, and require 'max_completion_tokens' instead 
+
+        O-series reasoning models (o1, o3-mini, o4-mini) do not support 'temperature',
+        often reject the 'system' role, and require 'max_completion_tokens' instead
         of the traditional 'max_tokens'.
         """
         model_name = self._model_name
@@ -40,7 +40,7 @@ class AzureOpenAIClient:
                 "messages": [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}],
                 "max_completion_tokens": max_tokens,
             }
-        
+
         return {
             "model": model_name,
             "messages": [
@@ -71,18 +71,18 @@ class AzureOpenAIClient:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        
+
         payload = self._build_payload(system_prompt, user_prompt, max_tokens)
 
         resp = requests.post(self._endpoint, headers=headers, json=payload, timeout=180)
         resp.raise_for_status()
-        
+
         data = resp.json()
         choice = data["choices"][0]
         raw_content = choice["message"]["content"]
         total_tokens = data.get("usage", {}).get("total_tokens", 0)
         finish_reason = choice.get("finish_reason")
-        
+
         if finish_reason == "length":
             log.error(
                 "CRITICAL: LLM response hit max token limit (finish_reason=length). "

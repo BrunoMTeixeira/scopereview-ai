@@ -41,8 +41,7 @@ def get_pipeline_orchestrator() -> PipelineOrchestrator:
         return instance
     except KeyError as e:
         _log.error(
-            "Failed to retrieve PipelineOrchestrator: %s. "
-            "Ensure it is registered during application startup.",
+            "Failed to retrieve PipelineOrchestrator: %s. " "Ensure it is registered during application startup.",
             str(e),
         )
         raise
