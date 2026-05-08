@@ -4,6 +4,7 @@ import time
 from ..core.logger import get_logger
 from ..core.triage import triage_files, TriageLevel
 from ..core.knowledge_ledger import build_ledger, format_ledger_for_prompt
+from ..core.ast_skeleton import skeletonize_map
 from ..ports.ado_client import AzureDevOpsClientPort
 from ..ports.dedup import PipelineDedupPort
 from .code_review import CodeReviewService
@@ -162,12 +163,25 @@ class PipelineOrchestrator:
             work_items = self._ado.get_work_items(repo_id, pr_id, project)
             regras_repo = self._ado.get_repo_rules(repo_id, project, commit_sha)
 
+            # ── STRATEGY 4: AST Skeleton for Requirements ────────────────────
+            # Send only structural signatures (imports, class/function defs, docstrings)
+            # to the Requirements Agent instead of full code. Saves 60-80% input tokens.
+            mapa_skeleton = skeletonize_map(mapa_full)
+
+            # ── STRATEGY 5: Strip code arrays from injected findings ─────────
+            # The Requirements Agent only needs finding metadata (title, line, severity),
+            # not the actual code snippets. This saves ~30 tokens per finding.
+            lean_findings = [
+                {k: v for k, v in f.items() if k not in ("vulnerable_code", "fixed_code", "suggestion_code")}
+                for f in findings_to_inject
+            ] if findings_to_inject else []
+
             req_result, req_metrics = self._requirements_review.validate_requirements(
                 pr_info=pr_info,
                 work_items=work_items,
                 regras_repo=regras_repo,
-                mapa_ficheiros=mapa_full,
-                injected_findings=findings_to_inject,
+                mapa_ficheiros=mapa_skeleton,
+                injected_findings=lean_findings,
                 ledger_context=ledger_context,
             )
 
