@@ -6,17 +6,26 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class CodeFinding(BaseModel):
-    """Contract aligned with `templates/prompts.py` (LLM output). Extra keys allowed for static analyzer metadata."""
+    """Contract aligned with `templates/prompts.py` (LLM output).
+
+    Accepts both compact schema (reason, fix) and legacy keys
+    (justification, recommendation, description) for backward
+    compatibility with the static analyzer.
+    """
 
     model_config = ConfigDict(extra="allow")
 
     title: str = ""
-    description: str = ""
+    description: str = ""  # legacy — kept for static analyzer compat
     severity: str = "low"
     type: str = "quality"
     file: str = ""
     line: Optional[int] = None
     vulnerable_code: List[str] = Field(default_factory=list)
+    # New compact keys (LLM output)
+    reason: str = ""
+    fix: str = ""
+    # Legacy keys (static analyzer / old LLM responses)
     recommendation: str = ""
     fixed_code: List[str] = Field(default_factory=list)
     justification: str = ""

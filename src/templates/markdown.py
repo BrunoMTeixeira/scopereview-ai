@@ -97,15 +97,17 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
 
         lang = _linguagem(f.get("file", ""))
 
-        if vuln_code or fixed_code or f.get("description"):
+        # Prefer compact keys (reason/fix), fallback to legacy (justification/recommendation/description)
+        justification = f.get("reason") or f.get("justification") or f.get("description", "")
+        recommendation = f.get("fix") or f.get("recommendation", "")
+
+        if vuln_code or fixed_code or justification:
             if vuln_code:
                 lines += [f"```{lang}", vuln_code, "```"]
 
-            justification = f.get("justification") or f.get("description", "")
             if justification:
                 lines += [f"> **Justification:** {justification}"]
 
-            recommendation = f.get("recommendation", "")
             if recommendation:
                 lines += [f"> **Suggestion:** {recommendation}"]
 
