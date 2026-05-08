@@ -201,3 +201,60 @@ async def test_webhook_orchestrate_success():
                 assert response.status_code == 202
 
     app.dependency_overrides.clear()
+
+@pytest.mark.anyio
+async def test_check_webhook_secret_payload_too_large():
+    """Testa rejeição de payload excessivamente grande."""
+    request = _mock_request({"Content-Length": str((2 * 1024 * 1024) + 1)})
+    with pytest.raises(HTTPException) as exc:
+        await check_webhook_secret(request)
+    assert exc.value.status_code == 413
+    assert "Payload too large" in exc.value.detail
+
+@pytest.mark.anyio
+async def test_check_webhook_secret_require_https_in_prod():
+    """Testa se em produção o HTTPS é forçado."""
+    with patch("src.api.webhooks.settings") as mock_settings:
+        mock_settings.is_production = True
+        request = _mock_request({})
+        request.url.scheme = "http"  # Not https
+        with pytest.raises(HTTPException) as exc:
+            await check_webhook_secret(request)
+        assert exc.value.status_code == 403
+        assert "HTTPS required" in exc.value.detail
+
+@pytest.mark.anyio
+async def test_check_webhook_secret_hmac_invalid():
+    """Testa falha de validação HMAC."""
+    with patch("src.api.webhooks.settings") as mock_settings:
+        mock_settings.WEBHOOK_SECRET = "secret"
+        mock_settings.is_production = False
+        request = _mock_request({
+            "X-Hub-Signature-256": "sha256=invalidhash123",
+        })
+        request.body = AsyncMock(return_value=b"body content")
+        
+        with pytest.raises(HTTPException) as exc:
+            await check_webhook_secret(request)
+        assert exc.value.status_code == 401
+        assert "Invalid HMAC signature" in exc.value.detail
+
+@pytest.mark.anyio
+async def test_check_webhook_secret_hmac_valid():
+    """Testa sucesso de validação HMAC."""
+    import hashlib
+    import hmac
+    
+    secret = "my-secret-key"
+    body = b"valid body content"
+    expected_mac = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    
+    with patch("src.api.webhooks.settings") as mock_settings:
+        mock_settings.WEBHOOK_SECRET = secret
+        mock_settings.is_production = False
+        request = _mock_request({
+            "X-Hub-Signature-256": f"sha256={expected_mac}",
+        })
+        request.body = AsyncMock(return_value=body)
+        
+        assert await check_webhook_secret(request) is True
