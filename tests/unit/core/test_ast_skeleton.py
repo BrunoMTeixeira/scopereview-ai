@@ -213,7 +213,7 @@ class Manager:
 
 
 class TestCompressCode:
-    """Tests for the muscle view compressor."""
+    """Tests for the AC-Aware Context Pruning compressor."""
 
     # AC terms that would be extracted from the GDPR acceptance criteria
     AC_TERMS = {

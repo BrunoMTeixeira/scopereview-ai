@@ -171,7 +171,7 @@ class PipelineOrchestrator:
                 for f in findings_to_inject
             ] if findings_to_inject else []
 
-            # ── Code Compression ("Muscle View") ─────────────────────────────
+            # ── Code Compression ("AC-Aware Context Pruning") ─────────────────────────────
             # Dynamic AC-Aware Compression: extracts key terms from Acceptance
             # Criteria (quoted strings, UPPER_CASE, snake_case, numerics) and
             # keeps code lines matching those terms. Self-configuring for any domain.

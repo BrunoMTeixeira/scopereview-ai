@@ -221,7 +221,7 @@ def skeletonize_map(mapa: Dict[str, str]) -> Dict[str, str]:
     return {path: skeletonize_file(path, content) for path, content in mapa.items()}
 
 
-# ─── CODE COMPRESSOR ("Muscle View") ──────────────────────────────────────────
+# ─── CODE COMPRESSOR ("AC-Aware Context Pruning") ─────────────────────────────
 # Unlike the skeleton (signatures only), the compressor keeps essential
 # implementation lines: SQL, returns, method calls, conditionals, string
 # literals with key values. Removes intermediary assignments, logging,
@@ -342,7 +342,7 @@ _SKIP_PATTERNS = [
 
 
 def compress_code(source: str, ac_terms: set = None) -> str:
-    """Compress code to 'muscle view' — keeps implementation-critical lines.
+    """Compress code to 'AC-aware pruned view' — keeps implementation-critical lines.
 
     Keeps: imports, definitions, SQL, returns, conditionals, method calls,
     string literals with AC-derived key values, error handling.
@@ -401,7 +401,7 @@ def compress_code(source: str, ac_terms: set = None) -> str:
 
 
 def compress_file(path: str, content: str, ac_terms: set = None) -> str:
-    """Compress a file's code to muscle view.
+    """Compress a file's code to AC-aware pruned view.
 
     Args:
         path: File path (for logging).
@@ -427,7 +427,7 @@ def compress_map(
     mapa: Dict[str, str],
     ac_terms: set = None,
 ) -> Dict[str, str]:
-    """Compress all files in a map to muscle view.
+    """Compress all files in a map to AC-aware pruned view.
 
     Args:
         mapa: Dictionary mapping file paths to full content.

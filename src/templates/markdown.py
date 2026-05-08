@@ -124,7 +124,7 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
 
     time_val = metrics.get("time", 0)
     tokens_val = metrics.get("tokens", 0)
-    lines += ["---", "", f"<sub>⏱ {time_val}s · {tokens_val:,} tokens · ScopeReview AI v2.0</sub>"]
+    lines += ["---", "", f"<sub>⏱ {time_val}s · {tokens_val:,} tokens · ScopeReview AI</sub>"]
     return "\n".join(lines)
 
 
@@ -272,5 +272,5 @@ def format_requirements_review(
 
     time_val = metrics.get("time", 0)
     tokens_val = metrics.get("tokens", 0)
-    lines += ["---", "", f"<sub>⏱ {time_val}s · {tokens_val:,} tokens · ScopeReview AI v2.0</sub>"]
+    lines += ["---", "", f"<sub>⏱ {time_val}s · {tokens_val:,} tokens · ScopeReview AI</sub>"]
     return "\n".join(lines)
