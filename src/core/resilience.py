@@ -77,7 +77,7 @@ def with_retry_on_transient_http_errors(
         stop=stop_after_attempt(max_attempts),
         # Exponential backoff (2, 4, 8...) + Random Jitter (0-2s) to prevent thundering herd
         wait=wait_exponential(multiplier=multiplier, min=min_wait, max=max_wait) + wait_random(0, 2),
-        before_sleep=before_sleep_log(log, log_level="WARNING"),
+        before_sleep=before_sleep_log(log, log_level=30),  # logging.WARNING = 30
         reraise=True,
     )
 

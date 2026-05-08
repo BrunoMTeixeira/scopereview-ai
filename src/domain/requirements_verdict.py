@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from .logger import get_logger
+from ..core.logger import get_logger
 
 log = get_logger("DomainPolicy")
 

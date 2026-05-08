@@ -13,6 +13,7 @@ def disable_webhook_auth(monkeypatch):
     from src.api import webhooks
     mock_settings = MagicMock()
     mock_settings.WEBHOOK_SECRET = ""
+    mock_settings.is_production = False
     monkeypatch.setattr(webhooks, "settings", mock_settings)
 
 

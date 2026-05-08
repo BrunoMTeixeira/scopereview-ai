@@ -127,6 +127,7 @@ def format_requirements_review(
     requisitos = resultado.get("requirements", [])
     veredicto = resultado.get("overall_verdict", "UNVERIFIABLE")
     sumario = resultado.get("implementation_summary", "")
+    verdict_reason = resultado.get("verdict_reason", "")
     wi_info = resultado.get("work_items_analysed", [])
 
     requisitos_ord = sorted(requisitos, key=lambda r: STATUS_ORDER.get(r.get("status", "MISSING"), 99))
@@ -155,6 +156,11 @@ def format_requirements_review(
     ]
 
     if sumario: lines += [f"> {sumario}", ""]
+
+    # Display Domain Policy override notice when the deterministic engine corrected the LLM verdict
+    if verdict_reason and "[Policy:" in verdict_reason:
+        lines += [f"> ⚖️ **Governance Notice:** {verdict_reason}", ""]
+
     lines += ["---", ""]
 
     if wi_info:

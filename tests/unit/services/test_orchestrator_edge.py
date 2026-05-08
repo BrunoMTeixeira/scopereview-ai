@@ -62,9 +62,12 @@ def test_process_pr_pipeline_code_review_fails_but_continues(orchestrator):
     orchestrator._dedup.should_skip_duplicate.return_value = False
     orchestrator._ado.get_pr_details.return_value = {"title": "T", "commit_sha": "s", "base_sha": "b"}
     orchestrator._ado.get_changed_files.return_value = ({"f1.py": "c"}, {"f1.py": "d"})
+    orchestrator._ado.get_work_items.return_value = []
+    orchestrator._ado.get_repo_rules.return_value = ""
     
     # Simular falha no Code Review
-    orchestrator._code_review.analyze_pr_code.return_value = (None, 0)
+    orchestrator._code_review.analyze_pr_code.return_value = (None, {"tokens": 0, "time": 0, "token_budget_exceeded": False})
+    orchestrator._requirements_review.validate_requirements.return_value = (None, {"tokens": 0, "time": 0})
     
     orchestrator.process_pr_pipeline(123, "repo1", "proj1")
     

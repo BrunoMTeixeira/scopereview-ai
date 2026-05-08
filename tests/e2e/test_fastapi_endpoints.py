@@ -80,4 +80,4 @@ class TestWebhookEndpoint:
         client = TestClient(app)
         response = client.post("/webhook/orchestrate", data="invalid json")
 
-        assert response.status_code == 422
+        assert response.status_code == 400  # Custom handler masks 422

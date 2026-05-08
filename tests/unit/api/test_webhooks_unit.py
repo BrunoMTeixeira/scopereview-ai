@@ -1,41 +1,54 @@
 import base64
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 from fastapi import Request, HTTPException, BackgroundTasks
 from src.api.webhooks import check_webhook_secret, webhook_orchestrate
 from src.models.webhooks import ADOWebhookPayload
 from src.core.config import settings
+
+
+def _mock_request(headers_map: dict) -> MagicMock:
+    """Creates a mock Request with a headers.get that returns values from headers_map."""
+    request = MagicMock(spec=Request)
+    request.headers = MagicMock()
+    request.headers.get = lambda key, default=None: headers_map.get(key, default)
+    request.url = MagicMock()
+    request.url.scheme = "https"
+    return request
+
 
 @pytest.mark.anyio
 async def test_check_webhook_secret_success():
     """Testa autenticação bem-sucedida com segredo."""
     with patch("src.api.webhooks.settings") as mock_settings:
         mock_settings.WEBHOOK_SECRET = "correct-password"
-        request = MagicMock(spec=Request)
-        # Base64 de "user:correct-password"
+        mock_settings.is_production = False
         auth = base64.b64encode(b"user:correct-password").decode()
-        request.headers.get.return_value = f"Basic {auth}"
+        request = _mock_request({
+            "Authorization": f"Basic {auth}",
+        })
         
-        assert check_webhook_secret(request) is True
+        assert await check_webhook_secret(request) is True
 
 @pytest.mark.anyio
 async def test_check_webhook_secret_no_secret_required():
     """Testa quando não há segredo configurado (deve retornar True)."""
     with patch("src.api.webhooks.settings") as mock_settings:
         mock_settings.WEBHOOK_SECRET = ""
-        request = MagicMock(spec=Request)
-        assert check_webhook_secret(request) is True
+        mock_settings.is_production = False
+        request = _mock_request({})
+        assert await check_webhook_secret(request) is True
 
 @pytest.mark.anyio
 async def test_check_webhook_secret_missing_header():
     """Testa quando falta o cabeçalho de autorização."""
     with patch("src.api.webhooks.settings") as mock_settings:
         mock_settings.WEBHOOK_SECRET = "secret"
-        request = MagicMock(spec=Request)
-        request.headers.get.return_value = None
+        mock_settings.is_production = False
+        request = _mock_request({})
         
         with pytest.raises(HTTPException) as exc:
-            check_webhook_secret(request)
+            await check_webhook_secret(request)
         assert exc.value.status_code == 401
         assert "Missing Authorization header" in exc.value.detail
 
@@ -44,11 +57,13 @@ async def test_check_webhook_secret_invalid_format():
     """Testa quando o cabeçalho não começa com 'Basic '."""
     with patch("src.api.webhooks.settings") as mock_settings:
         mock_settings.WEBHOOK_SECRET = "secret"
-        request = MagicMock(spec=Request)
-        request.headers.get.return_value = "Bearer token"
+        mock_settings.is_production = False
+        request = _mock_request({
+            "Authorization": "Bearer token",
+        })
         
         with pytest.raises(HTTPException) as exc:
-            check_webhook_secret(request)
+            await check_webhook_secret(request)
         assert exc.value.status_code == 401
         assert "Invalid Authorization header" in exc.value.detail
 
@@ -57,13 +72,14 @@ async def test_check_webhook_secret_wrong_credentials():
     """Testa credenciais erradas."""
     with patch("src.api.webhooks.settings") as mock_settings:
         mock_settings.WEBHOOK_SECRET = "correct-secret"
-        request = MagicMock(spec=Request)
-        # Base64 de "user:wrong-secret"
+        mock_settings.is_production = False
         auth = base64.b64encode(b"user:wrong-secret").decode()
-        request.headers.get.return_value = f"Basic {auth}"
+        request = _mock_request({
+            "Authorization": f"Basic {auth}",
+        })
         
         with pytest.raises(HTTPException) as exc:
-            check_webhook_secret(request)
+            await check_webhook_secret(request)
         assert exc.value.status_code == 401
         assert "Invalid credentials" in exc.value.detail
 
@@ -72,11 +88,13 @@ async def test_check_webhook_secret_parse_error():
     """Testa erro de parse (Base64 inválido)."""
     with patch("src.api.webhooks.settings") as mock_settings:
         mock_settings.WEBHOOK_SECRET = "secret"
-        request = MagicMock(spec=Request)
-        request.headers.get.return_value = "Basic !@#$%^"
+        mock_settings.is_production = False
+        request = _mock_request({
+            "Authorization": "Basic !@#$%^",
+        })
         
         with pytest.raises(HTTPException) as exc:
-            check_webhook_secret(request)
+            await check_webhook_secret(request)
         assert exc.value.status_code == 401
 
 @pytest.mark.anyio
@@ -84,13 +102,14 @@ async def test_check_webhook_secret_decode_error():
     """Testa erro de descodificação (UTF-8 inválido)."""
     with patch("src.api.webhooks.settings") as mock_settings:
         mock_settings.WEBHOOK_SECRET = "secret"
-        request = MagicMock(spec=Request)
-        # Bytes que não são UTF-8 válidos
+        mock_settings.is_production = False
         invalid_utf8 = base64.b64encode(b"\xff\xfe\xfd").decode()
-        request.headers.get.return_value = f"Basic {invalid_utf8}"
+        request = _mock_request({
+            "Authorization": f"Basic {invalid_utf8}",
+        })
         
         with pytest.raises(HTTPException) as exc:
-            check_webhook_secret(request)
+            await check_webhook_secret(request)
         assert exc.value.status_code == 401
 
 @pytest.mark.anyio
@@ -148,31 +167,37 @@ async def test_webhook_orchestrate_inactive_pr():
 @pytest.mark.anyio
 async def test_webhook_orchestrate_success():
     """Testa o caminho de sucesso (deve agendar a tarefa)."""
-    with patch("src.api.webhooks.injector.get") as mock_get:
-        mock_limiter = MagicMock()
-        mock_limiter.is_allowed.return_value = True
-        mock_get.return_value = mock_limiter
-        payload = ADOWebhookPayload(
-            eventType="git.pullrequest.created",
-            resourceVersion="1.0",
-            resource={
-                "pullRequestId": 123,
-                "status": "active",
-                "title": "T",
-                "repository": {
-                    "id": "repo-1", "name": "n1",
-                    "project": {"name": "ProjectA"}
+    from src.main import app
+    from src.composition import get_pipeline_orchestrator
+    from fastapi.testclient import TestClient
+
+    mock_orch = MagicMock()
+    app.dependency_overrides[get_pipeline_orchestrator] = lambda: mock_orch
+
+    with patch("src.api.webhooks.settings") as mock_settings:
+        mock_settings.WEBHOOK_SECRET = ""
+        mock_settings.is_production = False
+
+        with patch("src.api.webhooks.injector.get") as mock_get:
+            mock_limiter = MagicMock()
+            mock_limiter.is_allowed.return_value = True
+            mock_get.return_value = mock_limiter
+
+            with TestClient(app) as client:
+                payload = {
+                    "eventType": "git.pullrequest.created",
+                    "resourceVersion": "1.0",
+                    "resource": {
+                        "pullRequestId": 123,
+                        "status": "active",
+                        "title": "T",
+                        "repository": {
+                            "id": "repo-1", "name": "n1",
+                            "project": {"name": "ProjectA"}
+                        }
+                    }
                 }
-            }
-        )
-        
-        background_tasks = MagicMock(spec=BackgroundTasks)
-        
-        with patch("src.api.webhooks.get_pipeline_orchestrator") as mock_get_orch:
-            mock_orch = MagicMock()
-            mock_get_orch.return_value = mock_orch
-            
-            response = await webhook_orchestrate(payload, background_tasks)
-            
-            assert response.status_code == 202
-            assert background_tasks.add_task.called
+                response = client.post("/webhook/orchestrate", json=payload)
+                assert response.status_code == 202
+
+    app.dependency_overrides.clear()

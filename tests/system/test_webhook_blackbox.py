@@ -20,11 +20,11 @@ def mock_orchestrator():
 @pytest.fixture
 def disable_webhook_auth(monkeypatch):
     """Disable webhook authentication for testing."""
-    # Patch settings.WEBHOOK_SECRET to empty string for tests
     from src.api import webhooks
     from unittest.mock import MagicMock
     mock_settings = MagicMock()
     mock_settings.WEBHOOK_SECRET = ""
+    mock_settings.is_production = False
     monkeypatch.setattr(webhooks, "settings", mock_settings)
 
 def test_webhook_blackbox_success(mock_orchestrator, env_setup, disable_webhook_auth):
@@ -70,8 +70,8 @@ def test_webhook_blackbox_invalid_payload(env_setup, disable_webhook_auth):
     with TestClient(app) as client:
         response = client.post("/webhook/orchestrate", json=payload)
 
-    assert response.status_code == 422 # Unprocessable Entity
-    assert "detail" in response.json()
+    assert response.status_code == 400  # Custom handler masks 422 to prevent info disclosure
+    assert "error" in response.json()
 
 def test_webhook_blackbox_wrong_status(mock_orchestrator, env_setup, disable_webhook_auth):
     """
