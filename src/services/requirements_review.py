@@ -41,6 +41,7 @@ class RequirementsReviewService:
         regras_repo: str,
         mapa_ficheiros: Dict[str, str],
         injected_findings: Optional[list] = None,
+        ledger_context: Optional[str] = None,
     ) -> tuple[Optional[dict], dict]:
         """Validates the PR against extracted requirements and linked Work Items.
 
@@ -50,6 +51,7 @@ class RequirementsReviewService:
             regras_repo: Global rules for the repository.
             mapa_ficheiros: Dictionary mapping file paths to full content.
             injected_findings: Optional findings from the Code Review phase.
+            ledger_context: Optional pre-verified NFR context from Knowledge Ledger.
 
         Returns:
             tuple[Optional[dict], dict]: A tuple containing the validation results
@@ -63,6 +65,7 @@ class RequirementsReviewService:
             regras_repo=regras_repo,
             mapa_ficheiros=mapa_ficheiros,
             injected_findings=injected_findings,
+            ledger_context=ledger_context,
         )
 
         raw_json, tokens = self._ai.complete(

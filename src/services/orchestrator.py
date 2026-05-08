@@ -2,6 +2,8 @@ import requests
 import time
 
 from ..core.logger import get_logger
+from ..core.triage import triage_files, TriageLevel
+from ..core.knowledge_ledger import build_ledger, format_ledger_for_prompt
 from ..ports.ado_client import AzureDevOpsClientPort
 from ..ports.dedup import PipelineDedupPort
 from .code_review import CodeReviewService
@@ -19,6 +21,11 @@ class PipelineOrchestrator:
     This service coordinates the pipeline by strictly executing Agent 1 (Code Review)
     followed by Agent 2 (Requirements Validation). It ensures that deterministic findings
     (Shift-Left) and token budgets are passed between agents in a sequential handshake.
+
+    TOKEN OPTIMIZATION STRATEGIES (active):
+    1. Semantic Triage Gate — skips trivial files (docs, configs, locks) before LLM.
+    2. Cross-Agent Knowledge Ledger — maps findings to NFRs, avoids duplicate analysis.
+    3. Prompt Caching — Azure OpenAI auto-caches static system prompt prefixes (≥1024 tokens).
     """
 
     def __init__(
@@ -42,10 +49,12 @@ class PipelineOrchestrator:
         """Executes the complete pipeline for a Pull Request.
 
         1. Fetches PR details and changed files from ADO.
-        2. Runs the Code Review Agent (Phase 1 & 2).
-        3. Posts Code Review findings to the PR.
-        4. Runs the Requirements Validation Agent (injecting code findings).
-        5. Posts Requirements Validation results to the PR.
+        2. Applies Semantic Triage Gate to filter trivial files.
+        3. Runs the Code Review Agent (Phase 1 & 2) on non-trivial files.
+        4. Builds Knowledge Ledger from findings (cross-agent dedup).
+        5. Posts Code Review findings to the PR.
+        6. Runs the Requirements Validation Agent (injecting findings + ledger).
+        7. Posts Requirements Validation results to the PR.
 
         Args:
             pr_id (int): The numeric ID of the Pull Request.
@@ -78,12 +87,34 @@ class PipelineOrchestrator:
                 log.warning("No valid/supported files changed in PR #%s.", pr_id)
                 return
 
+            # ── STRATEGY 1: Semantic Triage Gate ─────────────────────────────
+            # Classify files into SKIP/LIGHT/FULL before any LLM invocation.
+            # SKIP files (docs, configs, locks) are removed entirely from both maps.
+            triage_buckets = triage_files(mapa_diffs)
+            skipped_files = set(triage_buckets[TriageLevel.SKIP].keys())
+
+            if skipped_files:
+                log.info(
+                    "Triage: Skipping %d trivial file(s) from LLM analysis: %s",
+                    len(skipped_files),
+                    list(skipped_files),
+                )
+                # Remove trivial files from both maps
+                mapa_diffs = {k: v for k, v in mapa_diffs.items() if k not in skipped_files}
+                mapa_full = {k: v for k, v in mapa_full.items() if k not in skipped_files}
+
+            if not mapa_diffs:
+                log.info("All files triaged as SKIP for PR #%s. No LLM analysis needed.", pr_id)
+                return
+
             log.info("Running Code Review Agent...")
             # CODE REVIEW: Send only Unified Diffs (mapa_diffs) to the reasoning agent.
             # This drastically reduces token consumption and focuses the LLM on the actual changes.
             cr_result, cr_metrics = self._code_review.analyze_pr_code(mapa_diffs)
 
             findings_to_inject = []
+            ledger_context = None
+
             if cr_result:
                 cr_markdown = format_code_review(
                     cr_result,
@@ -96,11 +127,21 @@ class PipelineOrchestrator:
                 findings_to_inject = [
                     f for f in cr_result.get("findings", []) if f.get("type") in ("quality", "bug", "security")
                 ]
+
+                # ── STRATEGY 2: Cross-Agent Knowledge Ledger ─────────────────
+                # Map findings to known NFRs so Requirements Agent skips re-analysis.
                 if findings_to_inject:
                     log.info(
                         "Shift-Left: Injecting %d findings into Requirements Validation context.",
                         len(findings_to_inject),
                     )
+                    ledger = build_ledger(findings_to_inject)
+                    ledger_context = format_ledger_for_prompt(ledger)
+                    if ledger_context:
+                        log.info(
+                            "Knowledge Ledger: %d NFRs pre-verified, will skip re-analysis in Requirements Agent.",
+                            len(ledger),
+                        )
             else:
                 log.info("Code Review returned no findings.")
 
@@ -112,6 +153,11 @@ class PipelineOrchestrator:
                 )
                 return
 
+            # ── STRATEGY 3: Prompt Caching (Azure OpenAI) ────────────────────
+            # Azure OpenAI automatically caches identical prompt prefixes (≥1024 tokens)
+            # at 50% cost. Our static REQUIREMENTS_SYSTEM_PROMPT is the cached prefix.
+            # No code changes needed — this works out of the box.
+
             log.info("Running Requirements Validation Agent...")
             work_items = self._ado.get_work_items(repo_id, pr_id, project)
             regras_repo = self._ado.get_repo_rules(repo_id, project, commit_sha)
@@ -122,6 +168,7 @@ class PipelineOrchestrator:
                 regras_repo=regras_repo,
                 mapa_ficheiros=mapa_full,
                 injected_findings=findings_to_inject,
+                ledger_context=ledger_context,
             )
 
             if req_result:
@@ -149,6 +196,6 @@ class PipelineOrchestrator:
         except Exception as exc:
             log.exception("Unhandled error in pipeline for PR #%s: %s", pr_id, exc)
         finally:
-            # ESSENCIAL: Garante que o trinco  sempre libertado para permitir futuras anlises
+            # ESSENCIAL: Garante que o trinco é sempre libertado para permitir futuras análises
             self._dedup.release(pr_id, "orchestrator")
             log.debug("Dedup lock released for PR #%s", pr_id)

@@ -80,6 +80,7 @@ def build_requirements_prompt(
     regras_repo: str,
     mapa_ficheiros: Dict[str, str],
     injected_findings: list = None,
+    ledger_context: str = None,
 ) -> str:
     wi_section = format_work_items_for_prompt(work_items)
     regras_section = f"\n{regras_repo}" if regras_repo else "(No repository rules)"
@@ -104,6 +105,9 @@ def build_requirements_prompt(
     else:
         code_review_context = ""
 
+    # Cross-Agent Knowledge Ledger: inject pre-verified NFRs
+    ledger_section = f"\n{ledger_context}\n" if ledger_context else ""
+
     return f"""Requirements Validation Agent. Determine whether code changes implement linked Work Items.
 
 === WORK ITEMS ===
@@ -111,8 +115,7 @@ def build_requirements_prompt(
 
 === REPO RULES ===
 {regras_section}
-{code_review_context}
-=== PR CONTEXT ===
+{code_review_context}{ledger_section}=== PR CONTEXT ===
 Title: {pr_info.get('title', 'N/A')} | Author: [REDACTED]
 
 <pr_description>
