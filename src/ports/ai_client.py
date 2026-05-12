@@ -11,6 +11,6 @@ class AIModelClientPort(Protocol):
         user_prompt: str,
         *,
         max_tokens: int = 8000,
-    ) -> Tuple[Optional[str], int]:
-        """Returns (json_text_or_none, total_tokens)."""
+    ) -> Tuple[Optional[str], dict]:
+        """Returns (json_text_or_none, usage_metrics_dict)."""
         ...

@@ -108,10 +108,21 @@ class PipelineOrchestrator:
                 log.info("All files triaged as SKIP for PR #%s. No LLM analysis needed.", pr_id)
                 return
 
-            log.info("Running Code Review Agent...")
-            # CODE REVIEW: Send only Unified Diffs (mapa_diffs) to the reasoning agent.
-            # This drastically reduces token consumption and focuses the LLM on the actual changes.
-            cr_result, cr_metrics = self._code_review.analyze_pr_code(mapa_diffs)
+            # PRE-LOAD REQUIREMENTS & RULES EARLY
+            # Ensures Code Review Agent has visibility into Acceptance Criteria context
+            # to detect functional regressions, stubs, and unimplemented requirements.
+            log.info("Pre-loading PR Requirements & Repository Rules for early context injection...")
+            work_items = self._ado.get_work_items(repo_id, pr_id, project)
+            regras_repo = self._ado.get_repo_rules(repo_id, project, commit_sha)
+
+            log.info("Running Code Review Agent (Guided by Requirements)...")
+            # ENHANCED CODE REVIEW: Passing Diff (focus), Mapa Full (for skeleton generation),
+            # and Work Items (for context-aware regression detection).
+            cr_result, cr_metrics = self._code_review.analyze_pr_code(
+                mapa_diffs=mapa_diffs,
+                mapa_full=mapa_full,
+                work_items=work_items,
+            )
 
             findings_to_inject = []
             ledger_context = None
@@ -159,9 +170,8 @@ class PipelineOrchestrator:
             # at 50% cost. Our static REQUIREMENTS_SYSTEM_PROMPT is the cached prefix.
             # No code changes needed — this works out of the box.
 
+            # Requirements already loaded at line 113
             log.info("Running Requirements Validation Agent...")
-            work_items = self._ado.get_work_items(repo_id, pr_id, project)
-            regras_repo = self._ado.get_repo_rules(repo_id, project, commit_sha)
 
             # ── Finding Context Stripping ─────────────────────────────────────
             # The Requirements Agent only needs finding metadata (title, line, severity),
@@ -198,12 +208,27 @@ class PipelineOrchestrator:
                 log.info("Pipeline completed for PR #%s (code review + requirements).", pr_id)
 
                 # Record metrics
-                total_tokens = cr_metrics.get("tokens", 0) + req_metrics.get("tokens", 0)
+                t_in = cr_metrics.get("input_tokens", 0) + req_metrics.get("input_tokens", 0)
+                t_out = cr_metrics.get("output_tokens", 0) + req_metrics.get("output_tokens", 0)
+                total_tokens = t_in + t_out
+                
                 latency = (time.time() - start_time) * 1000  # ms
-                metrics.record_analysis(success=True, tokens=total_tokens, latency_ms=latency)
+                metrics.record_analysis(
+                    success=True, 
+                    total_tokens=total_tokens, 
+                    input_tokens=t_in, 
+                    output_tokens=t_out, 
+                    latency_ms=latency
+                )
             else:
                 log.error("Requirements Validation failed to generate a result.")
-                metrics.record_analysis(success=False, tokens=0, latency_ms=0)
+                metrics.record_analysis(
+                    success=False, 
+                    total_tokens=0, 
+                    input_tokens=0, 
+                    output_tokens=0, 
+                    latency_ms=0
+                )
 
         except requests.RequestException as exc:
             log.error("Azure DevOps HTTP error for PR #%s: %s", pr_id, exc, exc_info=True)

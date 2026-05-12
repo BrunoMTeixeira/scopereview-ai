@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from ..core.logger import get_logger
 from ..core.llm_json import parse_llm_json_object  # ✅ ADICIONAR ESTE IMPORT
 from ..ports.ai_client import AIModelClientPort
+from ..core.ast_skeleton import skeletonize_file  # 🆕 IMPORT SKELETONIZER
 from .static_analyzer import StaticAnalyzer
 from ..templates.prompts import build_code_review_prompt, CODE_REVIEW_SYSTEM_PROMPT
 
@@ -61,32 +62,50 @@ class CodeReviewService:
                 atual = ""
         return blocos if blocos else [conteudo]
 
-    def _analisar_bloco(self, caminho: str, bloco: str) -> tuple[Optional[dict], int]:
+    def _analisar_bloco(
+        self,
+        caminho: str,
+        bloco: str,
+        work_items: List[dict] = None,
+        skeleton: str = None
+    ) -> tuple[Optional[dict], dict]:
         """Analyze a single code block using AI with robust JSON parsing.
 
         Uses parse_llm_json_object for resilient handling of malformed JSON
         from the AI model (includes json-repair fallback).
         """
-        prompt = build_code_review_prompt(caminho, bloco)
-        raw_json, tokens = self._ai.complete(
+        prompt = build_code_review_prompt(
+            caminho=caminho,
+            bloco=bloco,
+            work_items=work_items,
+            skeleton=skeleton
+        )
+        raw_json, usage = self._ai.complete(
             system_prompt=CODE_REVIEW_SYSTEM_PROMPT,
             user_prompt=prompt,
         )
         if raw_json:
             try:
-                return parse_llm_json_object(raw_json, log_context="CodeReview"), tokens
+                return parse_llm_json_object(raw_json, log_context="CodeReview"), usage
             except Exception as e:
                 log.error("Failed to parse AI Code Review JSON: %s", str(e))
-        return None, tokens
+        return None, usage
 
-    def analyze_pr_code(self, mapa: Dict[str, str]) -> tuple[Optional[dict], dict]:
+    def analyze_pr_code(
+        self,
+        mapa_diffs: Dict[str, str],
+        mapa_full: Dict[str, str] = None,
+        work_items: List[dict] = None,
+    ) -> tuple[Optional[dict], dict]:
         """Performs a comprehensive code review on a set of files.
 
         Combines static analysis and LLM-based analysis. Handles block splitting,
         token budgeting, and result aggregation (deduplication and scoring).
 
         Args:
-            mapa (Dict[str, str]): A dictionary mapping file paths to their diff content.
+            mapa_diffs (Dict[str, str]): A dictionary mapping file paths to their diff content.
+            mapa_full (Dict[str, str]): Optional dictionary mapping paths to FULL content for skeletonization.
+            work_items (List[dict]): Optional list of ACs/Work Items for requirements-guided review.
 
         Returns:
             tuple[Optional[dict], dict]: A tuple containing the review results
@@ -94,18 +113,29 @@ class CodeReviewService:
         """
         start_time = time.time()
         total_tokens = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_reasoning_tokens = 0
         all_f, all_p = [], []
         budget_exceeded = False
 
-        for path, content in mapa.items():
+        # Pre-calculate skeletons to share across blocks
+        skeletons = {}
+        if mapa_full:
+            for path, content in mapa_full.items():
+                skeletons[path] = skeletonize_file(path, content)
+
+        for path, content in mapa_diffs.items():
             static_findings = StaticAnalyzer.analyze_file(path, content)
             if static_findings:
                 log.info("  [STATIC] '%s' — %d finding(s)", path, len(static_findings))
                 all_f.extend(static_findings)
 
-        for path, content in mapa.items():
+        for path, content in mapa_diffs.items():
             blocos = self._dividir_em_blocos(content)
             context_header = self._build_context_header(content)
+            skeleton_context = skeletons.get(path)
+
             log.info("Analysing '%s' — %d block(s)", path, len(blocos))
 
             for i, b in enumerate(blocos):
@@ -121,8 +151,21 @@ class CodeReviewService:
                     break
 
                 log.info("  [BLOCK %d/%d]", i + 1, len(blocos))
-                res, tokens = self._analisar_bloco(path, context_header + b)
-                total_tokens += tokens
+                res, usage = self._analisar_bloco(
+                    caminho=path,
+                    bloco=context_header + b,
+                    work_items=work_items,
+                    skeleton=skeleton_context,
+                )
+                
+                input_tok = usage.get("prompt_tokens", 0)
+                output_tok = usage.get("completion_tokens", 0)
+                reason_tok = usage.get("reasoning_tokens", 0)
+                
+                total_input_tokens += input_tok
+                total_output_tokens += output_tok
+                total_reasoning_tokens += reason_tok
+                total_tokens = total_input_tokens + total_output_tokens
                 if not res:
                     continue
 
@@ -137,6 +180,9 @@ class CodeReviewService:
         metrics = {
             "time": round(time.time() - start_time, 1),
             "tokens": total_tokens,
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "reasoning_tokens": total_reasoning_tokens,
             "token_budget_exceeded": budget_exceeded,
         }
 

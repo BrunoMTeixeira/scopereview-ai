@@ -12,12 +12,21 @@ class SystemMetrics:
     total_success: int = 0
     total_failures: int = 0
     total_tokens_consumed: int = 0
+    total_input_tokens_consumed: int = 0
+    total_output_tokens_consumed: int = 0
     total_latency_ms: float = 0.0
     start_time: float = field(default_factory=time.time)
 
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def record_analysis(self, success: bool, tokens: int, latency_ms: float):
+    def record_analysis(
+        self, 
+        success: bool, 
+        total_tokens: int, 
+        input_tokens: int, 
+        output_tokens: int, 
+        latency_ms: float
+    ):
         """Thread-safe recording of an analysis event."""
         with self._lock:
             self.total_requests += 1
@@ -25,7 +34,9 @@ class SystemMetrics:
                 self.total_success += 1
             else:
                 self.total_failures += 1
-            self.total_tokens_consumed += tokens
+            self.total_tokens_consumed += total_tokens
+            self.total_input_tokens_consumed += input_tokens
+            self.total_output_tokens_consumed += output_tokens
             self.total_latency_ms += latency_ms
 
     def get_summary(self) -> Dict[str, Any]:
@@ -42,6 +53,8 @@ class SystemMetrics:
                 ),
                 "total_failures": self.total_failures,
                 "total_tokens": self.total_tokens_consumed,
+                "input_tokens": self.total_input_tokens_consumed,
+                "output_tokens": self.total_output_tokens_consumed,
                 "average_latency_ms": round(avg_latency, 2),
             }
 

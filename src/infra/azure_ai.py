@@ -58,15 +58,12 @@ class AzureOpenAIClient:
         user_prompt: str,
         *,
         max_tokens: int = 8000,
-    ) -> Tuple[Optional[str], int]:
+    ) -> Tuple[Optional[str], dict]:
         """
         Sends the prompt to Azure AI Foundry.
         Handled by the @with_retry_on_transient_http_errors decorator for 429s/5xx.
         """
         headers = {
-            # Dual-authentication strategy for compatibility with both:
-            # 1. Regional Azure OpenAI (requires 'api-key')
-            # 2. Azure AI Foundry Serverless (requires 'Authorization: Bearer')
             "api-key": self._api_key,
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -80,7 +77,23 @@ class AzureOpenAIClient:
         data = resp.json()
         choice = data["choices"][0]
         raw_content = choice["message"]["content"]
-        total_tokens = data.get("usage", {}).get("total_tokens", 0)
+        
+        usage = data.get("usage", {})
+        total_tokens = usage.get("total_tokens", 0)
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        
+        # Reasoning tokens specific to O-series models (o1, o3, o4)
+        details = usage.get("completion_tokens_details") or {}
+        reasoning_tokens = details.get("reasoning_tokens", 0)
+        
+        usage_dict = {
+            "total_tokens": total_tokens,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "reasoning_tokens": reasoning_tokens
+        }
+        
         finish_reason = choice.get("finish_reason")
 
         if finish_reason == "length":
@@ -95,7 +108,7 @@ class AzureOpenAIClient:
         end = raw_content.rfind("}")
         if start != -1 and end != -1:
             sanitized = sanitize_llm_json_fragment(raw_content[start : end + 1])
-            return sanitized, total_tokens
+            return sanitized, usage_dict
 
         log.error("AI response did not contain a valid JSON block.")
-        return None, total_tokens
+        return None, usage_dict

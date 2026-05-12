@@ -68,7 +68,7 @@ class RequirementsReviewService:
             ledger_context=ledger_context,
         )
 
-        raw_json, tokens = self._ai.complete(
+        raw_json, usage = self._ai.complete(
             system_prompt=REQUIREMENTS_SYSTEM_PROMPT,
             user_prompt=prompt,
             max_tokens=self._max_completion_tokens,
@@ -76,7 +76,10 @@ class RequirementsReviewService:
 
         metrics = {
             "time": round(time.time() - start_time, 1),
-            "tokens": tokens,
+            "tokens": usage.get("total_tokens", 0),
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+            "reasoning_tokens": usage.get("reasoning_tokens", 0),
             "requirements_max_completion_tokens": self._max_completion_tokens,
         }
 
