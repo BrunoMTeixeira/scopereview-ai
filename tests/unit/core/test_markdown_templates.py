@@ -46,7 +46,7 @@ def test_format_requirements_review_mixed():
         "work_items_analysed": [{"id": 101, "title": "WI 1", "type": "User Story", "has_acceptance_criteria": True}]
     }
     pr_info = {"author": "Bruno"}
-    metrics = {"time": 3.0, "tokens": 800}
+    metrics = {"time": 3.0, "tokens": 800, "input_tokens": 600, "output_tokens": 200}
     
     md = format_requirements_review(res, pr_info, metrics, model_display_name="DeepSeek")
     
@@ -55,4 +55,5 @@ def test_format_requirements_review_mixed():
     assert "Req 1" in md
     assert "Req 2" in md
     assert "#101" in md
-    assert "800 tokens" in md
+    assert "600 in" in md
+    assert "200 out" in md

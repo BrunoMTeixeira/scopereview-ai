@@ -9,7 +9,7 @@ def rr_service():
 
 def test_validate_requirements_no_json(rr_service):
     """Testa se o servio lida bem com falta de resposta da IA."""
-    rr_service._ai.complete.return_value = (None, 0)
+    rr_service._ai.complete.return_value = (None, {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0})
     
     result, metrics = rr_service.validate_requirements(
         pr_info={"title": "T"},
@@ -31,7 +31,7 @@ def test_validate_requirements_success(rr_service):
         "implementation_summary": "Summary"
     }
     import json
-    rr_service._ai.complete.return_value = (json.dumps(json_data), 500)
+    rr_service._ai.complete.return_value = (json.dumps(json_data), {"total_tokens": 500, "prompt_tokens": 400, "completion_tokens": 100})
     
     result, metrics = rr_service.validate_requirements(
         pr_info={"title": "T", "description": "D", "author": "A"},
@@ -46,7 +46,7 @@ def test_validate_requirements_success(rr_service):
 
 def test_validate_requirements_parsing_exception(rr_service):
     """Testa o tratamento de erros genricos no parsing do JSON."""
-    rr_service._ai.complete.return_value = ('{"invalid": "json"}', 100)
+    rr_service._ai.complete.return_value = ('{"invalid": "json"}', {"total_tokens": 100, "prompt_tokens": 100, "completion_tokens": 0})
     
     with patch("src.services.requirements_review.parse_llm_json_object", side_effect=RuntimeError("Fatal Error")):
         result, metrics = rr_service.validate_requirements(

@@ -64,7 +64,7 @@ class MockAIClient(AIModelClientPort):
             *,
             max_tokens: int = 8000,
     ) -> tuple:
-        return '{"findings": [], "verdict": "PASSED", "score": 9.5}', 1000
+        return '{"findings": [], "verdict": "PASSED", "score": 9.5}', {"total_tokens": 1000, "prompt_tokens": 900, "completion_tokens": 100}
 
 
 class MockDedupPort(PipelineDedupPort):

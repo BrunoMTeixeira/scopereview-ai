@@ -6,7 +6,7 @@ from src.services.code_review import CodeReviewService
 def mock_ai():
     client = MagicMock()
     # Retorno padrão para o complete
-    client.complete.return_value = ('{"findings": []}', 100)
+    client.complete.return_value = ('{"findings": []}', {"total_tokens": 100, "prompt_tokens": 100, "completion_tokens": 0})
     return client
 
 def test_code_review_token_budget_exceeded(mock_ai):
@@ -35,7 +35,7 @@ def test_code_review_deduplicates_static_and_ai_findings(mock_ai):
     # Simular IA a encontrar um erro de qualidade na linha 1
     mock_ai.complete.return_value = (
         '{"findings": [{"title": "AI Error", "line": 1, "type": "quality", "severity": "low"}]}', 
-        50
+        {"total_tokens": 50, "prompt_tokens": 50, "completion_tokens": 0}
     )
     
     # Simular Analisador Estático (print()) também na linha 1

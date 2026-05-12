@@ -28,7 +28,7 @@ def test_validate_requirements_domain_override(rr_service):
         "verdict_reason": "I think it is ok",
         "implementation_summary": "Summary"
     }
-    rr_service._ai.complete.return_value = (json.dumps(json_hallucinated), 500)
+    rr_service._ai.complete.return_value = (json.dumps(json_hallucinated), {"total_tokens": 500, "prompt_tokens": 450, "completion_tokens": 50})
     
     result, _ = rr_service.validate_requirements(
         pr_info={"title": "T"},
@@ -55,7 +55,7 @@ def test_validate_requirements_markdown_stripping(rr_service):
     }
     raw_response = "Analysis finished:\n```json\n" + json.dumps(json_payload) + "\n```\nHope this helps!"
     
-    rr_service._ai.complete.return_value = (raw_response, 100)
+    rr_service._ai.complete.return_value = (raw_response, {"total_tokens": 100, "prompt_tokens": 90, "completion_tokens": 10})
     
     result, _ = rr_service.validate_requirements(
         pr_info={"title": "T"},

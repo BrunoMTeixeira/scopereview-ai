@@ -27,10 +27,10 @@ def test_complete_success(ai_client):
         mock_response.raise_for_status = MagicMock()
         mock_post.return_value = mock_response
         
-        content, tokens = ai_client.complete("sys", "user")
+        content, usage = ai_client.complete("sys", "user")
         
         assert content == '{"result": "ok"}'
-        assert tokens == 150
+        assert usage["total_tokens"] == 150
 
 def test_complete_with_retries_on_429(ai_client):
     """Testa se o cliente faz retry em caso de Rate Limit (429)."""
@@ -62,7 +62,7 @@ def test_complete_with_retries_on_429(ai_client):
         
         mock_post.side_effect = side_effect
         
-        content, tokens = ai_client.complete("sys", "user")
+        content, usage = ai_client.complete("sys", "user")
         assert content == '{"ok": true}'
         assert mock_post.call_count == 2
 
@@ -78,5 +78,5 @@ def test_complete_invalid_json_handling(ai_client):
         }
         mock_post.return_value = mock_response
         
-        content, tokens = ai_client.complete("sys", "user")
+        content, usage = ai_client.complete("sys", "user")
         assert content is None
