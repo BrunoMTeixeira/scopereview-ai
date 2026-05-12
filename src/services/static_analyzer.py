@@ -88,7 +88,16 @@ class StaticAnalyzer:
     def analyze_file(path: str, content: str) -> List[dict]:
         findings = []
         lines = content.splitlines()
-        raw_lines = [l.split("|", 1)[-1] if "|" in l else l for l in lines]  # strip line numbers
+        # ── Pre-processing ────────────────────────────────────────────────────
+
+        def _extract_and_neutralize(l: str) -> str:
+            content = l.split("|", 1)[-1] if "|" in l else l
+            # If the line starts with minus (diff deletion), return empty to preserve indexing but ignore content
+            if content.lstrip().startswith("-"):
+                return ""
+            return content
+
+        raw_lines = [_extract_and_neutralize(l) for l in lines]
         raw_code = "\n".join(raw_lines)
 
         # ── 1. Unused imports ─────────────────────────────────────────────────
@@ -290,19 +299,29 @@ class StaticAnalyzer:
         # ── 11. SQL Injection Risk ────────────────────────────────────────────
         for i, raw_l in enumerate(raw_lines):
             # Detects string formatting/interpolation inside cursor.execute calls
-            if re.search(r'cursor\.execute\s*\(.*(f["\']|%|\.format\()', raw_l, re.I):
-                if any(k in raw_l.upper() for k in ("SELECT", "UPDATE", "DELETE", "INSERT")):
-                    findings.append(
-                        StaticAnalyzer._build_finding(
-                            path,
-                            i + 1,
-                            "security",
-                            "critical",
-                            "Possible SQL Injection",
-                            "Use parameterized queries (?, %s) instead of string formatting.",
-                            [raw_l.strip()],
-                        )
+            has_exec_concat = re.search(r'cursor\.execute\s*\(.*(f["\']|%|\.format\()', raw_l, re.I)
+
+            # Detects manual string concatenation of common SQL keywords
+            has_var_concat = False
+            clean_l = re.sub(r"^[+\-]+", "", raw_l.strip()).strip()
+            if any(k in clean_l.upper() for k in ("SELECT", "UPDATE", "DELETE", "INSERT")):
+                if "+" in clean_l and ('"' in clean_l or "'" in clean_l):
+                    # Likely a dynamically concatenated query variable
+                    if re.search(r"\b(sql|query|cmd|command)\b\s*=", clean_l, re.I):
+                        has_var_concat = True
+
+            if has_exec_concat or has_var_concat:
+                findings.append(
+                    StaticAnalyzer._build_finding(
+                        path,
+                        i + 1,
+                        "security",
+                        "critical",
+                        "Possible SQL Injection",
+                        "Concatenating variables in SQL queries allows malicious code injection. Use parameterized queries.",
+                        [raw_l.strip()],
                     )
+                )
 
         # ── 12. Method Stubs and Placeholder Logic ─────────────────────────────
         for i in range(len(raw_lines) - 1):

@@ -53,6 +53,45 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\n\s*\n+", "\n", text).strip()
 
 
+def _generate_numbered_diff(base_lines: List[str], target_lines: List[str], fromfile: str, tofile: str) -> str:
+    """Generates a Unified Diff with absolute line numbers prepended to each line."""
+    diff = difflib.unified_diff(base_lines, target_lines, fromfile=fromfile, tofile=tofile, n=5)
+    numbered_lines = []
+
+    cur_base = 0
+    cur_target = 0
+
+    for line in diff:
+        if line.startswith("@@"):
+            # Parse hunk header: @@ -start,len +start,len @@
+            match = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            if match:
+                cur_base = int(match.group(1))
+                cur_target = int(match.group(2))
+            numbered_lines.append(line)
+            continue
+
+        if line.startswith("---") or line.startswith("+++"):
+            numbered_lines.append(line)
+            continue
+
+        if line.startswith("+"):
+            # New content only increments target index
+            numbered_lines.append(f"{cur_target:>4} | {line}")
+            cur_target += 1
+        elif line.startswith("-"):
+            # Removed content only increments base index
+            numbered_lines.append(f"{cur_base:>4} | {line}")
+            cur_base += 1
+        else:
+            # Context line increments both
+            numbered_lines.append(f"{cur_target:>4} | {line}")
+            cur_base += 1
+            cur_target += 1
+
+    return "".join(numbered_lines)
+
+
 class AzureDevOpsClient:
     """REST adapter for Azure DevOps Services API.
 
@@ -226,8 +265,7 @@ class AzureDevOpsClient:
                         raw_target = raw_source
                         base_lines = [l + "\n" for l in raw_base.splitlines()[: self._max_lines]]
                         target_lines = [l + "\n" for l in raw_target.splitlines()[: self._max_lines]]
-                        diff = difflib.unified_diff(base_lines, target_lines, fromfile=path, tofile=path, n=5)
-                        diff_text = "".join(diff)
+                        diff_text = _generate_numbered_diff(base_lines, target_lines, fromfile=path, tofile=path)
                         if diff_text.strip():
                             mapa_diffs[path] = diff_text
                         else:

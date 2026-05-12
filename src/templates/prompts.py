@@ -39,10 +39,17 @@ def build_code_review_prompt(
 
 Priority: Security > Bugs > Quality > Maintainability (LOW only).
 
+INPUT FORMAT:
+You are receiving a 'Unified Diff' where each line is prefixed by its ABSOLUTE file line number (e.g., `563 | + code`).
+- Lines starting with `+` are new code you MUST review.
+- Lines starting with `-` are deleted code (DO NOT report bugs in deleted code).
+- Other lines are surrounding context to help you understand the file.
+- USE THE ABSOLUTE NUMBER (e.g., 563) as the `line` field for findings.
+
 CONCISENESS CONSTRAINTS:
 - title: ≤10 words
-- reason: ≤15 words (why it matters)
-- fix: ≤15 words (how to fix)
+- reason: ≤15 words
+- fix: ≤15 words
 
 {wi_section}{skeleton_section}JSON only format:
 {{

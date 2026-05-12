@@ -45,7 +45,12 @@ class CodeReviewService:
     @staticmethod
     def _build_context_header(content: str) -> str:
         lines = content.splitlines()
-        context = [l.strip() for l in lines if l.strip().startswith(("import ", "from ", "class ", "def "))]
+        context = []
+        for l in lines:
+            clean = l.split("|", 1)[-1] if "|" in l else l
+            clean = re.sub(r"^[+\-\s]+", "", clean).strip()
+            if clean.startswith(("import ", "from ", "class ", "def ")):
+                context.append(clean)
         return "# FILE CONTEXT (imports & signatures):\n" + "\n".join(context[:30]) + "\n\n" if context else ""
 
     @staticmethod
@@ -189,11 +194,48 @@ class CodeReviewService:
         if not all_f:
             return None, metrics
 
+        # ── Finding Enrichment & Post-processing ──────────────────────────────
+        # 1. Pre-compute a line cache from mapa_diffs for absolute code accuracy
+        line_cache = {}
+        for path, diff_content in mapa_diffs.items():
+            file_cache = {}
+            for d_line in diff_content.splitlines():
+                if "|" in d_line:
+                    try:
+                        num = int(d_line.split("|")[0].strip())
+                        code_piece = d_line.split("|", 1)[-1]
+                        # FIX: Never cache DELETED code lines. This prevents base-file lines from colliding
+                        # with target-file lines sharing the same line counter in the Cache drawer.
+                        if code_piece.lstrip().startswith("-"):
+                            continue
+                        file_cache[num] = code_piece  # preserves diff marker + code
+                    except ValueError:
+                        continue
+            line_cache[path] = file_cache
+
+        # 2. Standardize, clean, and sort
         vistos, unique_f = set(), []
         sorted_all_f = sorted(all_f, key=lambda x: 0 if x.get("_source") == "static" else 1)
 
+        # 3. Iterate and enrich lazy/missing code snippets automatically
         for f in sorted_all_f:
-            line_group = (f.get("line") or 0) // 3 if f.get("line") is not None else 0
+            path = f.get("file")
+            line = f.get("line")
+
+            # If LLM returned a lazy numeric placeholder as code, replace it with actual code from our file cache
+            vuln_list = f.get("vulnerable_code") or []
+            is_lazy = not vuln_list or all(str(line) in str(v).strip() and len(str(v).strip()) < 8 for v in vuln_list)
+
+            if is_lazy and path in line_cache and line in line_cache[path]:
+                # Inject true code snippet with diff alignment
+                f["vulnerable_code"] = [line_cache[path][line].rstrip()]
+            elif vuln_list and not any("|" in str(v) for v in vuln_list) and path in line_cache and line in line_cache[path]:
+                # Extra touch: If code exists but lacks formatting, normalize with cache's formatted line
+                f["vulnerable_code"] = [line_cache[path][line].rstrip()]
+
+        for f in sorted_all_f:
+            # Reduced collapsing window from 3 to 1 to separate adjacent line findings (e.g. sequential unused imports)
+            line_group = (f.get("line") or 0) // 1 if f.get("line") is not None else 0
             key = (f.get("file"), line_group, f.get("type"))
             if key not in vistos:
                 vistos.add(key)

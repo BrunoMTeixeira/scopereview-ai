@@ -246,6 +246,7 @@ _KEEP_PATTERNS = [
     re.compile(r'.*UPDATE .+ SET', re.IGNORECASE),       # DML
     re.compile(r'.*DELETE FROM', re.IGNORECASE),         # DML
     re.compile(r'.*SELECT .+ FROM', re.IGNORECASE),      # DQL
+    re.compile(r'^\s*(SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|OFFSET|JOIN|HAVING)\b', re.IGNORECASE),  # Multiline DQL
     re.compile(r".*=\s*\{"),                               # dict construction
     re.compile(r"^\s*'\w+':"),                             # dict key (single-q)
     re.compile(r'^\s*"\w+":'),                             # dict key (double-q)
@@ -260,6 +261,7 @@ _KEEP_PATTERNS = [
 _AC_QUOTED_STRING = re.compile(r"['\"`]([A-Za-z0-9_@.]+)['\"`]")
 _AC_UPPER_CONST = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b")
 _AC_SNAKE_IDENT = re.compile(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+){1,})\b")
+_AC_PLAIN_WORD = re.compile(r"\b([a-zA-Z]{4,})\b")  # Capture generic lowercase terms (e.g. 'limit')
 _AC_NUMERIC = re.compile(r"\b(\d{4,})\b")
 
 # Base terms that are always relevant (structural/universal)
@@ -276,7 +278,8 @@ _STOPWORDS = frozenset([
     "accepted", "rejected", "contains", "include", "personal",
     "create", "update", "delete", "query", "return", "support",
     "field", "column", "text", "type", "integer", "primary",
-    "default", "foreign", "not_null",
+    "default", "foreign", "not_null", "para", "como", "deve", "este",
+    "esta", "seja", "pelos", "pelas", "uma", "um", "uns", "umas",
 ])
 
 
@@ -317,6 +320,12 @@ def extract_ac_terms(work_items: list) -> set:
         # Extract snake_case identifiers: gdpr_request_id, audit_logs
         for match in _AC_SNAKE_IDENT.finditer(full_text):
             term = match.group(1)
+            if term not in _STOPWORDS and len(term) >= 4:
+                terms.add(term)
+
+        # Extract plain lowercase terms (important for non-structured text like 'limit' or 'offset')
+        for match in _AC_PLAIN_WORD.finditer(full_text):
+            term = match.group(1).lower()
             if term not in _STOPWORDS and len(term) >= 4:
                 terms.add(term)
 
