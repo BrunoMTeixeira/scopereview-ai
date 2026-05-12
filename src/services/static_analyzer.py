@@ -13,6 +13,73 @@ _COMMON_STDLIB_NAMES = {
     "partial": "functools",
 }
 
+_POLYGLOT_PATTERNS = [
+    {
+        "pattern": r"\b(eval|exec|system|popen|shell_exec)\b\s*\(",
+        "type": "security",
+        "severity": "critical",
+        "title": "Dangerous Function (Dynamic Execution)",
+        "desc": "Risk of Remote Code Execution (RCE). Avoid running strings as code.",
+        "flags": re.IGNORECASE,
+    },
+    {
+        "pattern": r"\b(strcpy|strcat|gets|sprintf|vsprintf)\b\s*\(",
+        "type": "security",
+        "severity": "high",
+        "title": "Unsafe Memory Function (C/C++)",
+        "desc": "Prone to Buffer Overflow. Use safe bounds-checking equivalents (strncpy, snprintf).",
+        "flags": re.IGNORECASE,
+    },
+    {
+        "pattern": r"(verify\s*=\s*False|ssl_verify\s*=\s*false|check_hostname\s*=\s*False|TrustAllCerts|ALLOW_ALL_HOSTNAME_VERIFIER)",
+        "type": "security",
+        "severity": "critical",
+        "title": "Disabled SSL/TLS Verification",
+        "desc": "Enables Man-in-the-Middle (MitM) attacks by trusting any certificate.",
+        "flags": re.IGNORECASE,
+    },
+    {
+        "pattern": r"\b(md5|sha1|des|rc4)\b",
+        "type": "security",
+        "severity": "medium",
+        "title": "Weak Cryptographic Algorithm",
+        "desc": "Vulnerable to collision or brute-force attacks. Use SHA256 or AES256.",
+        "flags": re.IGNORECASE,
+    },
+    {
+        "pattern": r"catch\s*\([^)]*Exception[^)]*\)\s*\{\s*\}",
+        "type": "quality",
+        "severity": "medium",
+        "title": "Empty Catch Block (Java/JS/C#)",
+        "desc": "Generic catch without logic hides failure modes and simplifies corruption.",
+        "flags": 0,
+    },
+    {
+        "pattern": r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.",
+        "type": "security",
+        "severity": "critical",
+        "title": "Hardcoded JWT Token Detected",
+        "desc": "Embedded authentication token discovered in plaintext code.",
+        "flags": 0,
+    },
+    {
+        "pattern": r"Access-Control-Allow-Origin\s*[:=]\s*['\"]?\*['\"]?",
+        "type": "security",
+        "severity": "high",
+        "title": "Wildcard CORS Permitted",
+        "desc": "Exposes internal resources to any requesting web domain.",
+        "flags": re.IGNORECASE,
+    },
+    {
+        "pattern": r"\b(TODO|FIXME|HACK|XXX)\b",
+        "type": "quality",
+        "severity": "low",
+        "title": "Technical Debt / Temporary Placeholder",
+        "desc": "Code contains TODO/FIXME comments that should be addressed before PR merge.",
+        "flags": 0,
+    },
+]
+
 
 class StaticAnalyzer:
     """Deterministic regex-based checks that catch bugs LLMs consistently miss."""
@@ -26,7 +93,8 @@ class StaticAnalyzer:
 
         # ── 1. Unused imports ─────────────────────────────────────────────────
         for i, raw_l in enumerate(raw_lines):
-            stripped = raw_l.strip()
+            # STRIP DIFF MARKERS (+/-) TO PREVENT BLIND SPOTS
+            stripped = re.sub(r"^[+\-]+", "", raw_l.strip()).strip()
             m_import = re.match(r"^import\s+(\w+)", stripped)
             m_from = re.match(r"^from\s+\S+\s+import\s+(.+)", stripped)
             if m_import:
@@ -80,7 +148,7 @@ class StaticAnalyzer:
 
         # ── 3. Broad except clauses ───────────────────────────────────────────
         for i, raw_l in enumerate(raw_lines):
-            stripped = raw_l.strip()
+            stripped = re.sub(r"^[+\-]+", "", raw_l.strip()).strip()
             if re.match(r"^except\s*:", stripped) or re.match(r"^except\s+Exception\s*:", stripped):
                 findings.append(
                     StaticAnalyzer._build_finding(
@@ -130,8 +198,8 @@ class StaticAnalyzer:
 
         # ── 6. Unreachable code ───────────────────────────────────────────────
         for i in range(len(raw_lines) - 1):
-            curr = raw_lines[i].strip()
-            nxt = raw_lines[i + 1].strip()
+            curr = re.sub(r"^[+\-]+", "", raw_lines[i].strip()).strip()
+            nxt = re.sub(r"^[+\-]+", "", raw_lines[i + 1].strip()).strip()
             if curr == "pass" and nxt.startswith("return "):
                 findings.append(
                     StaticAnalyzer._build_finding(
@@ -233,6 +301,45 @@ class StaticAnalyzer:
                             "Possible SQL Injection",
                             "Use parameterized queries (?, %s) instead of string formatting.",
                             [raw_l.strip()],
+                        )
+                    )
+
+        # ── 12. Method Stubs and Placeholder Logic ─────────────────────────────
+        for i in range(len(raw_lines) - 1):
+            curr = re.sub(r"^[+\-]+", "", raw_lines[i].strip()).strip()
+            nxt = re.sub(r"^[+\-]+", "", raw_lines[i + 1].strip()).strip()
+            
+            # If line is a method definition and next line is a passive return/pass
+            if curr.startswith("def ") and (
+                nxt == "pass" or 
+                re.match(r"^return\s+(?:True|False|None|['\"]deprecated['\"]|['\"]todo['\"])\s*$", nxt, re.I)
+            ):
+                findings.append(
+                    StaticAnalyzer._build_finding(
+                        path,
+                        i + 1,
+                        "quality",
+                        "medium",
+                        "Empty Method Stub detected",
+                        "Method appears to be a passive placeholder returning a constant or `pass`.",
+                        [curr, nxt],
+                    )
+                )
+
+        # ── 13. Polyglot Universal Engine (Multi-language) ────────────────────
+        for i, raw_l in enumerate(raw_lines):
+            clean = re.sub(r"^[+\-]+", "", raw_l.strip()).strip()
+            for rule in _POLYGLOT_PATTERNS:
+                if re.search(rule["pattern"], clean, rule["flags"]):
+                    findings.append(
+                        StaticAnalyzer._build_finding(
+                            path,
+                            i + 1,
+                            rule["type"],
+                            rule["severity"],
+                            rule["title"],
+                            rule["desc"],
+                            [clean],
                         )
                     )
 

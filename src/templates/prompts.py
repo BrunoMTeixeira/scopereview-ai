@@ -12,6 +12,7 @@ CODE_REVIEW_SYSTEM_PROMPT = (
     "ANALYTICAL FOCUS:\n"
     "- REGRESSION CHECK: Verify if logic removes pre-existing features specified in Requirements without replacements.\n"
     "- STUB & DEAD CODE CHECK: Flag functions that are empty placeholders, return constants without logic, or unreachable code.\n"
+    "- VALIDATION OMISSION: Flag inputs (budgets, limits, IDs) added without range/type verification.\n"
 )
 
 
