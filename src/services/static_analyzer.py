@@ -308,10 +308,10 @@ class StaticAnalyzer:
         for i in range(len(raw_lines) - 1):
             curr = re.sub(r"^[+\-]+", "", raw_lines[i].strip()).strip()
             nxt = re.sub(r"^[+\-]+", "", raw_lines[i + 1].strip()).strip()
-            
+
             # If line is a method definition and next line is a passive return/pass
             if curr.startswith("def ") and (
-                nxt == "pass" or 
+                nxt == "pass" or
                 re.match(r"^return\s+(?:True|False|None|['\"]deprecated['\"]|['\"]todo['\"])\s*$", nxt, re.I)
             ):
                 findings.append(

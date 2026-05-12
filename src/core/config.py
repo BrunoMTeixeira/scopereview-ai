@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # Processing Limits
     # ──────────────────────────────────────────────────────────────────────────
     MAX_FILES: int = Field(default=5, ge=1, le=50, description="Maximum files to analyze per PR")
-    MAX_LINES: int = Field(default=400, ge=50, le=2000, description="Maximum lines to fetch per file")
+    MAX_LINES: int = Field(default=2000, ge=50, le=2000, description="Maximum lines to fetch per file")
     MAX_TENTATIVAS: int = Field(default=3, ge=1, le=10, description="Max retry attempts for HTTP calls")
     MAX_HIGH_BLOCK: int = Field(default=3, ge=0, le=10, description="Max HIGH severity issues before blocking PR")
     MAX_TOKEN_BUDGET: int = Field(default=50000, ge=1000, description="Max cumulative LLM tokens per PR analysis")

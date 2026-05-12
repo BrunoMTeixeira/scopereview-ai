@@ -211,22 +211,22 @@ class PipelineOrchestrator:
                 t_in = cr_metrics.get("input_tokens", 0) + req_metrics.get("input_tokens", 0)
                 t_out = cr_metrics.get("output_tokens", 0) + req_metrics.get("output_tokens", 0)
                 total_tokens = t_in + t_out
-                
+
                 latency = (time.time() - start_time) * 1000  # ms
                 metrics.record_analysis(
-                    success=True, 
-                    total_tokens=total_tokens, 
-                    input_tokens=t_in, 
-                    output_tokens=t_out, 
+                    success=True,
+                    total_tokens=total_tokens,
+                    input_tokens=t_in,
+                    output_tokens=t_out,
                     latency_ms=latency
                 )
             else:
                 log.error("Requirements Validation failed to generate a result.")
                 metrics.record_analysis(
-                    success=False, 
-                    total_tokens=0, 
-                    input_tokens=0, 
-                    output_tokens=0, 
+                    success=False,
+                    total_tokens=0,
+                    input_tokens=0,
+                    output_tokens=0,
                     latency_ms=0
                 )
 

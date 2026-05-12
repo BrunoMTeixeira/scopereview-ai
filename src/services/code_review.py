@@ -157,11 +157,11 @@ class CodeReviewService:
                     work_items=work_items,
                     skeleton=skeleton_context,
                 )
-                
+
                 input_tok = usage.get("prompt_tokens", 0)
                 output_tok = usage.get("completion_tokens", 0)
                 reason_tok = usage.get("reasoning_tokens", 0)
-                
+
                 total_input_tokens += input_tok
                 total_output_tokens += output_tok
                 total_reasoning_tokens += reason_tok

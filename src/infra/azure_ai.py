@@ -77,23 +77,23 @@ class AzureOpenAIClient:
         data = resp.json()
         choice = data["choices"][0]
         raw_content = choice["message"]["content"]
-        
+
         usage = data.get("usage", {})
         total_tokens = usage.get("total_tokens", 0)
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
-        
+
         # Reasoning tokens specific to O-series models (o1, o3, o4)
         details = usage.get("completion_tokens_details") or {}
         reasoning_tokens = details.get("reasoning_tokens", 0)
-        
+
         usage_dict = {
             "total_tokens": total_tokens,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "reasoning_tokens": reasoning_tokens
         }
-        
+
         finish_reason = choice.get("finish_reason")
 
         if finish_reason == "length":

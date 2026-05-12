@@ -126,11 +126,11 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
     in_tok = metrics.get("input_tokens", 0)
     out_tok = metrics.get("output_tokens", 0)
     reason_tok = metrics.get("reasoning_tokens", 0)
-    
+
     out_text = f"{out_tok:,}"
     if reason_tok > 0:
         out_text += f" (incl. 💭 {reason_tok:,} thinking)"
-        
+
     lines += ["---", "", f"<sub>⏱ {time_val}s · 📥 {in_tok:,} in / 📤 {out_text} out tokens · ScopeReview AI</sub>"]
     return "\n".join(lines)
 
@@ -281,10 +281,10 @@ def format_requirements_review(
     in_tok = metrics.get("input_tokens", 0)
     out_tok = metrics.get("output_tokens", 0)
     reason_tok = metrics.get("reasoning_tokens", 0)
-    
+
     out_text = f"{out_tok:,}"
     if reason_tok > 0:
         out_text += f" (incl. 💭 {reason_tok:,} thinking)"
-        
+
     lines += ["---", "", f"<sub>⏱ {time_val}s · 📥 {in_tok:,} in / 📤 {out_text} out tokens · ScopeReview AI</sub>"]
     return "\n".join(lines)

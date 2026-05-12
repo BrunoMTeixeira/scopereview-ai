@@ -205,23 +205,35 @@ class AzureDevOpsClient:
 
                 path = change.get("item", {}).get("path", "")
                 if path and not any(path.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
-                    conteudo_full = self.get_file_diff(repo_id, project, path, commit_sha)
-                    if conteudo_full:
-                        mapa_full[path] = conteudo_full
+                    # Get RAW content truncated to max lines (for AST/Compressor)
+                    raw_source = self.get_file_content(repo_id, project, path, commit_sha)
+                    if raw_source:
+                        truncated_lines = raw_source.splitlines()[: self._max_lines]
+                        conteudo_full_raw = "\n".join(truncated_lines)
+                        mapa_full[path] = conteudo_full_raw
+                    else:
+                        conteudo_full_raw = ""
+
+                    # Build content WITH line numbers for AI context / diff fallback
+                    conteudo_diff_formatted = ""
+                    if conteudo_full_raw:
+                        conteudo_diff_formatted = "\n".join(
+                            [f"{i + 1:>4} | {l}" for i, l in enumerate(truncated_lines)]
+                        )
 
                     if base_sha:
                         raw_base = self.get_file_content(repo_id, project, path, base_sha)
-                        raw_target = self.get_file_content(repo_id, project, path, commit_sha)
-                        base_lines = [l + "\n" for l in raw_base.splitlines()]
-                        target_lines = [l + "\n" for l in raw_target.splitlines()]
+                        raw_target = raw_source
+                        base_lines = [l + "\n" for l in raw_base.splitlines()[: self._max_lines]]
+                        target_lines = [l + "\n" for l in raw_target.splitlines()[: self._max_lines]]
                         diff = difflib.unified_diff(base_lines, target_lines, fromfile=path, tofile=path, n=5)
                         diff_text = "".join(diff)
                         if diff_text.strip():
                             mapa_diffs[path] = diff_text
                         else:
-                            mapa_diffs[path] = conteudo_full
+                            mapa_diffs[path] = conteudo_diff_formatted
                     else:
-                        mapa_diffs[path] = conteudo_full
+                        mapa_diffs[path] = conteudo_diff_formatted
 
             return mapa_full, mapa_diffs
         except requests.RequestException as exc:

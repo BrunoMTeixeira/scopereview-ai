@@ -20,11 +20,11 @@ class SystemMetrics:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def record_analysis(
-        self, 
-        success: bool, 
-        total_tokens: int, 
-        input_tokens: int, 
-        output_tokens: int, 
+        self,
+        success: bool,
+        total_tokens: int,
+        input_tokens: int,
+        output_tokens: int,
         latency_ms: float
     ):
         """Thread-safe recording of an analysis event."""
