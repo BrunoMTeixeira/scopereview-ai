@@ -71,7 +71,7 @@ Orchestration: **`PipelineOrchestrator`** in `src.services.orchestrator`. Wiring
 | **Domain policy**                | `src/domain/requirements_verdict.py` — **canonical verdict enforcement** (MUST gate is absolute); LLM output may be overridden                                                       |
 | **Verdict normalization**        | LLM output → `json-repair` → Pydantic validation → **domain rules** → final authoritative verdict (see [Architecture](./Architecture.md))                                            |
 | **JSON resilience**              | `src/core/llm_json.py` — sanitize + `json-repair` + configurable `REQUIREMENTS_MAX_COMPLETION_TOKENS`                                                                                |
-| **Config**                       | `validate_settings()` on **app lifespan** (not import time); `ENVIRONMENT=dev` for dev mode; `SCOPE_REVIEW_ALLOW_HTTP_AI=1` for local HTTP mocks only                                |
+| **Config**                       | Configuration is validated at startup; set `ENVIRONMENT=dev` for local development and HTTP AI mock endpoints.        |
 | **Security**                     | Webhook errors do not leak secrets; PAT / keys via env only; no data sent to third-party SaaS                                                                                        |
 
 ---
@@ -110,7 +110,7 @@ src/
   services/            # orchestrator, code_review, requirements_review, static_analyzer
   models/              # Pydantic models (ADO Webhook + AI results)
   templates/           # prompts.py, markdown.py
-tests/                 # pytest suite (unit + integration + system + e2e) — 201 tests @ 92%
+tests/                 # pytest suite (unit + integration + system + e2e) — 201 tests @ 91.6% coverage
 docker-compose.yml     # agent + redis
 ```
 
