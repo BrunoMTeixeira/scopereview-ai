@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ─── Code Review Models ───────────────────────────────────────────────────────
 
@@ -31,6 +31,11 @@ class CodeFinding(BaseModel):
     justification: str = ""
     suggestion_code: List[str] = Field(default_factory=list)
 
+    @field_validator("vulnerable_code", "fixed_code", "suggestion_code", mode="before")
+    @classmethod
+    def _coerce_code_lists(cls, v: object) -> list:
+        return v if v is not None else []
+
 
 class CodeReviewResult(BaseModel):
     findings: List[CodeFinding]
@@ -59,6 +64,11 @@ class Requirement(BaseModel):
     evidence_code: List[str] = Field(default_factory=list)
     missing_detail: Optional[str] = None
     manual_test_hint: Optional[str] = None
+
+    @field_validator("evidence_code", mode="before")
+    @classmethod
+    def _coerce_evidence_code(cls, v: object) -> list:
+        return v if v is not None else []
 
 
 class RequirementsResult(BaseModel):
