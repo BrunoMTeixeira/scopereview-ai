@@ -82,11 +82,16 @@ class PipelineOrchestrator:
 
             commit_sha = pr_info["commit_sha"]
             base_sha = pr_info.get("base_sha", "")
-            mapa_full, mapa_diffs = self._ado.get_changed_files(repo_id, pr_id, project, commit_sha, base_sha)
+            mapa_full, mapa_diffs, total_eligible = self._ado.get_changed_files(repo_id, pr_id, project, commit_sha, base_sha)
 
             if not mapa_full and not mapa_diffs:
                 log.warning("No valid/supported files changed in PR #%s.", pr_id)
                 return
+
+            if total_eligible > len(mapa_full):
+                truncation_msg = f"⚠️ **Aviso de Limite Excedido:** Esta Pull Request contém {total_eligible} ficheiros suportados, mas o limite configurado (`MAX_FILES`) é {len(mapa_full)}. Apenas os primeiros {len(mapa_full)} ficheiros foram analisados."
+                self._ado.post_comment(repo_id, pr_id, project, truncation_msg)
+                log.warning("PR #%s truncated %d to %d files.", pr_id, total_eligible, len(mapa_full))
 
             # ── STRATEGY 1: Semantic Triage Gate ─────────────────────────────
             # Classify files into SKIP/LIGHT/FULL before any LLM invocation.
@@ -162,6 +167,10 @@ class PipelineOrchestrator:
                 log.warning(
                     "Circuit Breaker: Token budget reached in Phase 1. Skipping Requirements Validation for PR #%s.",
                     pr_id,
+                )
+                self._ado.post_comment(
+                    repo_id, pr_id, project,
+                    "⚠️ **Circuit Breaker:** O limite de tokens configurado (`MAX_TOKEN_BUDGET`) foi atingido durante a fase de Code Review. A fase de **Validação de Requisitos foi saltada** para controlar custos."
                 )
                 return
 

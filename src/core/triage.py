@@ -26,11 +26,23 @@ class TriageLevel(str, Enum):
     FULL = "full"
 
 
-# Files that never need LLM review
-_SKIP_EXTENSIONS = frozenset({
-    ".md", ".txt", ".rst", ".csv", ".json", ".lock",
-    ".gitignore", ".dockerignore", ".editorconfig",
+# Non-source file extensions excluded from analysis.
+# Shared constant: used by both the ADO download layer (skip download)
+# and the Triage Gate (skip LLM). Single source of truth.
+SKIP_EXTENSIONS = frozenset({
+    # Documents
+    ".md", ".txt", ".rst", ".csv",
+    # Data / Config
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".xml",
+    # Lock files
+    ".lock",
+    # Environment / CI config
+    ".env", ".gitignore", ".dockerignore", ".editorconfig",
     ".env.example", ".prettierrc", ".eslintignore",
+    # Media / Assets
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    # Web markup / style
+    ".html", ".css",
 })
 
 _SKIP_FILENAMES = frozenset({
@@ -63,7 +75,7 @@ def classify_file(path: str, content: str) -> TriageLevel:
     lower_path = path.lower()
 
     # Check extension-based skip
-    for ext in _SKIP_EXTENSIONS:
+    for ext in SKIP_EXTENSIONS:
         if lower_path.endswith(ext):
             return TriageLevel.SKIP
 

@@ -66,7 +66,7 @@ def with_retry_on_transient_http_errors(
             status_code = getattr(exception.response, "status_code", None) if exception.response else None
             # Retry on 429 (Rate Limit), 500, 502, 503, 504 (Server Errors)
             if status_code in (429, 500, 502, 503, 504):
-                log.warning(f"⚠️  HTTP {status_code} detected, will retry...")
+                log.warning("⚠️  HTTP %s detected, will retry...", status_code)
                 return True
 
         return False
@@ -109,7 +109,8 @@ def with_fallback(fallback_value: Any) -> Callable:
                 return func(*args, **kwargs)
             except Exception as e:
                 log.error(
-                    f"❌ All retry attempts exhausted for {func.__name__}. " f"Returning fallback value. Error: {e}"
+                    "❌ All retry attempts exhausted for %s. Returning fallback value. Error: %s",
+                    func.__name__, e
                 )
                 return fallback_value
 

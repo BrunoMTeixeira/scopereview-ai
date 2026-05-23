@@ -23,7 +23,7 @@ def test_process_pr_pipeline_success(orchestrator):
         "commit_sha": "sha1", 
         "base_sha": "base1"
     }
-    orchestrator._ado.get_changed_files.return_value = ({"f1.py": "code"}, {"f1.py": "diff"})
+    orchestrator._ado.get_changed_files.return_value = ({"f1.py": "code"}, {"f1.py": "diff"}, 1)
     orchestrator._ado.get_work_items.return_value = [{"id": 1, "title": "Task"}]
     orchestrator._ado.get_repo_rules.return_value = "rules"
     
@@ -51,7 +51,7 @@ def test_process_pr_pipeline_no_supported_files(orchestrator):
     orchestrator._dedup.should_skip_duplicate.return_value = False
     orchestrator._ado.get_pr_details.return_value = {"title": "T", "commit_sha": "s"}
     # Devolve mapas vazios
-    orchestrator._ado.get_changed_files.return_value = ({}, {})
+    orchestrator._ado.get_changed_files.return_value = ({}, {}, 0)
     
     orchestrator.process_pr_pipeline(123, "repo1", "proj1")
     
@@ -61,7 +61,7 @@ def test_process_pr_pipeline_code_review_fails_but_continues(orchestrator):
     """Testa se o orchestrator continua para requisitos se o CR falhar."""
     orchestrator._dedup.should_skip_duplicate.return_value = False
     orchestrator._ado.get_pr_details.return_value = {"title": "T", "commit_sha": "s", "base_sha": "b"}
-    orchestrator._ado.get_changed_files.return_value = ({"f1.py": "c"}, {"f1.py": "d"})
+    orchestrator._ado.get_changed_files.return_value = ({"f1.py": "c"}, {"f1.py": "d"}, 1)
     orchestrator._ado.get_work_items.return_value = []
     orchestrator._ado.get_repo_rules.return_value = ""
     

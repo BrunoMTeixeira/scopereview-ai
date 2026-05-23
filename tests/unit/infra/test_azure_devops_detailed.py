@@ -105,7 +105,7 @@ def test_get_changed_files_with_diff_logic(ado_client):
         # Sequência: Iterations -> Changes -> Diff(Base) -> Diff(Current) -> FullContent(Current)
         mock_get.side_effect = [mock_iter, mock_changes, mock_curr, mock_base, mock_curr]
         
-        map_full, map_diffs = ado_client.get_changed_files("repo1", 123, "proj1", "sha1", base_sha="base1")
+        map_full, map_diffs, total_eligible = ado_client.get_changed_files("repo1", 123, "proj1", "sha1", base_sha="base1")
         
         assert "/test.py" in map_full
         assert "/test.py" in map_diffs

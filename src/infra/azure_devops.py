@@ -7,31 +7,9 @@ from typing import Dict, List, Optional, Tuple
 
 from ..core.logger import get_logger
 from ..core.resilience import with_retry_on_transient_http_errors, with_fallback
+from ..core.triage import SKIP_EXTENSIONS
 
 log = get_logger("ADO")
-
-IGNORED_EXTENSIONS = {
-    ".md",
-    ".txt",
-    ".json",
-    ".lock",
-    ".yaml",
-    ".yml",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".svg",
-    ".ico",
-    ".html",
-    ".css",
-    ".xml",
-    ".toml",
-    ".ini",
-    ".cfg",
-    ".env",
-    ".gitignore",
-}
 
 
 # Limit file downloads to 1MB to prevent OOM in the container
@@ -208,8 +186,8 @@ class AzureDevOpsClient:
         project: str,
         commit_sha: str,
         base_sha: str = "",
-    ) -> Tuple[Dict[str, str], Dict[str, str]]:
-        """Returns (mapa_full, mapa_diffs)."""
+    ) -> Tuple[Dict[str, str], Dict[str, str], int]:
+        """Returns (mapa_full, mapa_diffs, total_eligible)."""
         url = (
             f"https://dev.azure.com/{self._organization}/{project}"
             f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations?api-version=7.1"
@@ -234,8 +212,8 @@ class AzureDevOpsClient:
             resp_changes.raise_for_status()
             changes = resp_changes.json().get("changeEntries", [])
 
-            for change in changes[: self._max_files]:
-                # Skip renames, deletions and folders (we only want clean code content)
+            eligible_changes = []
+            for change in changes:
                 change_type = change.get("changeType", "").lower()
                 is_folder = change.get("item", {}).get("isFolder", False)
 
@@ -243,40 +221,45 @@ class AzureDevOpsClient:
                     continue
 
                 path = change.get("item", {}).get("path", "")
-                if path and not any(path.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
-                    # Get RAW content truncated to max lines (for AST/Compressor)
-                    raw_source = self.get_file_content(repo_id, project, path, commit_sha)
-                    if raw_source:
-                        truncated_lines = raw_source.splitlines()[: self._max_lines]
-                        conteudo_full_raw = "\n".join(truncated_lines)
-                        mapa_full[path] = conteudo_full_raw
-                    else:
-                        conteudo_full_raw = ""
+                if path and not any(path.lower().endswith(ext) for ext in SKIP_EXTENSIONS):
+                    eligible_changes.append((change, path))
 
-                    # Build content WITH line numbers for AI context / diff fallback
-                    conteudo_diff_formatted = ""
-                    if conteudo_full_raw:
-                        conteudo_diff_formatted = "\n".join(
-                            [f"{i + 1:>4} | {l}" for i, l in enumerate(truncated_lines)]
-                        )
+            total_eligible = len(eligible_changes)
 
-                    if base_sha:
-                        raw_base = self.get_file_content(repo_id, project, path, base_sha)
-                        raw_target = raw_source
-                        base_lines = [l + "\n" for l in raw_base.splitlines()[: self._max_lines]]
-                        target_lines = [l + "\n" for l in raw_target.splitlines()[: self._max_lines]]
-                        diff_text = _generate_numbered_diff(base_lines, target_lines, fromfile=path, tofile=path)
-                        if diff_text.strip():
-                            mapa_diffs[path] = diff_text
-                        else:
-                            mapa_diffs[path] = conteudo_diff_formatted
+            for change, path in eligible_changes[: self._max_files]:
+                # Get RAW content truncated to max lines (for AST/Compressor)
+                raw_source = self.get_file_content(repo_id, project, path, commit_sha)
+                if raw_source:
+                    truncated_lines = raw_source.splitlines()[: self._max_lines]
+                    conteudo_full_raw = "\n".join(truncated_lines)
+                    mapa_full[path] = conteudo_full_raw
+                else:
+                    conteudo_full_raw = ""
+
+                # Build content WITH line numbers for AI context / diff fallback
+                conteudo_diff_formatted = ""
+                if conteudo_full_raw:
+                    conteudo_diff_formatted = "\n".join(
+                        [f"{i + 1:>4} | {l}" for i, l in enumerate(truncated_lines)]
+                    )
+
+                if base_sha:
+                    raw_base = self.get_file_content(repo_id, project, path, base_sha)
+                    raw_target = raw_source
+                    base_lines = [l + "\n" for l in raw_base.splitlines()[: self._max_lines]]
+                    target_lines = [l + "\n" for l in raw_target.splitlines()[: self._max_lines]]
+                    diff_text = _generate_numbered_diff(base_lines, target_lines, fromfile=path, tofile=path)
+                    if diff_text.strip():
+                        mapa_diffs[path] = diff_text
                     else:
                         mapa_diffs[path] = conteudo_diff_formatted
+                else:
+                    mapa_diffs[path] = conteudo_diff_formatted
 
-            return mapa_full, mapa_diffs
+            return mapa_full, mapa_diffs, total_eligible
         except requests.RequestException as exc:
             log.error("Failed to list changed files: %s", exc)
-            return {}, {}
+            return {}, {}, 0
 
     @with_retry_on_transient_http_errors(max_attempts=3)
     @with_fallback(fallback_value=[])

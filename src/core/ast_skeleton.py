@@ -35,7 +35,7 @@ def skeletonize_python(source: str) -> str:
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
-        log.warning(f"Failed to parse Python AST at line {e.lineno}, offset {e.offset}: {e.msg}. Context: {repr(e.text)}")
+        log.warning("Failed to parse Python AST at line %s, offset %s: %s. Context: %r", e.lineno, e.offset, e.msg, e.text)
         return _skeletonize_regex(source)
 
     lines = []

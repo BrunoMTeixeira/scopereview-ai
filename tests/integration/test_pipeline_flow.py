@@ -36,7 +36,8 @@ class MockAzureDevOpsClient(AzureDevOpsClientPort):
             },
             {
                 "test.py": "+def hello():\n+    print('hello')\n"
-            }
+            },
+            1
         )
 
     def post_comment(self, repo_id: str, pr_id: int, project: str, comment_text: str) -> None:

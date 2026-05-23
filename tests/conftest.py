@@ -54,10 +54,11 @@ class MockAzureDevOpsClient(AzureDevOpsClientPort):
 
     def get_changed_files(
         self, repo_id: str, pr_id: int, project: str, commit_sha: str, base_sha: str = ""
-    ) -> Tuple[Dict[str, str], Dict[str, str]]:
+    ) -> Tuple[Dict[str, str], Dict[str, str], int]:
         return (
             {"test.py": "   1 | def hello():\n   2 |     print('hello')\n"},
             {"test.py": "+def hello():\n+    print('hello')\n"},
+            1,
         )
 
     def get_work_items(self, repo_id: str, pr_id: int, project: str) -> List[dict]:
@@ -82,8 +83,8 @@ class MockAIClient(AIModelClientPort):
 
     def complete(
         self, system_prompt: str, user_prompt: str, *, max_tokens: int = 8000
-    ) -> Tuple[Optional[str], int]:
-        return self._response, self._tokens
+    ) -> Tuple[Optional[str], dict]:
+        return self._response, {"total_tokens": self._tokens, "prompt_tokens": 0, "completion_tokens": 0}
 
 
 class MockDedupPort(PipelineDedupPort):
