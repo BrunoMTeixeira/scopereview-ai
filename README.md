@@ -80,7 +80,7 @@ Orchestration: **`PipelineOrchestrator`** in `src.services.orchestrator`. Wiring
 
 | Layer             | Technology                                            |
 |-------------------|-------------------------------------------------------|
-| Runtime           | Python **3.14**, **FastAPI**, **Uvicorn**             |
+| Runtime           | Python **3.12**, **FastAPI**, **Uvicorn**             |
 | Integrations      | **requests** → ADO REST, Azure OpenAI-compatible chat |
 | Data validation   | **Pydantic v2**                                       |
 | Dedupe (optional) | **Redis** 7 (`redis` PyPI)                            |
