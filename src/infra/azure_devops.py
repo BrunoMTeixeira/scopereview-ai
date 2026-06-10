@@ -353,3 +353,34 @@ class AzureDevOpsClient:
             log.info("Successfully posted comment to PR #%s", pr_id)
         except requests.RequestException as exc:
             log.error("Failed to post PR comment: %s", exc)
+
+    def post_pr_status(self, repo_id: str, pr_id: int, project: str, state: str, description: str) -> None:
+        """Publishes a Status Check on the Pull Request.
+
+
+        Args:
+            repo_id: The repository identifier.
+            pr_id: The Pull Request numeric ID.
+            project: The project name.
+            state: The status state, e.g., 'succeeded', 'failed', 'error', 'pending'.
+            description: A short description for the status check.
+        """
+        url = (
+            f"https://dev.azure.com/{self._organization}/{project}"
+            f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/statuses?api-version=7.1"
+        )
+        payload = {
+            "state": state,
+            "description": description,
+            "context": {
+                "name": "ScopeReview AI",
+                "genre": "continuous-integration"
+            }
+        }
+        log.debug("Posting PR status '%s' to PR #%s", state, pr_id)
+        try:
+            resp = self._session.post(url, json=payload, timeout=self._request_timeout)
+            resp.raise_for_status()
+            log.info("Successfully posted PR status '%s' to PR #%s", state, pr_id)
+        except requests.RequestException as exc:
+            log.error("Failed to post PR status: %s", exc)

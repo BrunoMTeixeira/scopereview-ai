@@ -48,6 +48,10 @@ def test_post_comment_success(ado_client):
         ado_client.post_comment("repo", 123, "proj", "test comment")
         assert mock_post.called
 
+        mock_post.reset_mock()
+        ado_client.post_pr_status("repo", 123, "proj", "succeeded", "OK")
+        assert mock_post.called
+
 def test_get_work_items_empty(ado_client):
     """Testa recuperao de WIs quando no existem (método correto: get_work_items)."""
     with patch.object(ado_client._session, 'get') as mock_get:

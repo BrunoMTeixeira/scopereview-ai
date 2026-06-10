@@ -11,6 +11,7 @@ from .code_review import CodeReviewService
 from .requirements_review import RequirementsReviewService
 from ..templates.markdown import format_code_review, format_requirements_review
 from ..core.metrics import metrics
+from ..domain.requirements_verdict import explain_must_gate_breach
 
 log = get_logger("Orchestrator")
 
@@ -86,6 +87,7 @@ class PipelineOrchestrator:
 
             if not mapa_full and not mapa_diffs:
                 log.warning("No valid/supported files changed in PR #%s.", pr_id)
+                self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="No valid/supported files to review.")
                 return
 
             if total_eligible > len(mapa_full):
@@ -111,6 +113,7 @@ class PipelineOrchestrator:
 
             if not mapa_diffs:
                 log.info("All files triaged as SKIP for PR #%s. No LLM analysis needed.", pr_id)
+                self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="All changed files are trivial (skipped).")
                 return
 
             # PRE-LOAD REQUIREMENTS & RULES EARLY
@@ -172,6 +175,7 @@ class PipelineOrchestrator:
                     repo_id, pr_id, project,
                     "⚠️ **Circuit Breaker:** O limite de tokens configurado (`MAX_TOKEN_BUDGET`) foi atingido durante a fase de Code Review. A fase de **Validação de Requisitos foi saltada** para controlar custos."
                 )
+                self._ado.post_pr_status(repo_id, pr_id, project, state="failed", description="Orçamento de tokens excedido.")
                 return
 
             # ── STRATEGY 3: Prompt Caching (Azure OpenAI) ────────────────────
@@ -216,6 +220,21 @@ class PipelineOrchestrator:
                 self._ado.post_comment(repo_id, pr_id, project, req_markdown)
                 log.info("Pipeline completed for PR #%s (code review + requirements).", pr_id)
 
+                # Avaliar veredicto final e enviar PR Status
+                cr_approved = cr_result.get("approve", True) if cr_result else True
+
+                req_list = req_result.get("requirements", []) if req_result else []
+                must_breached, _ = explain_must_gate_breach(req_list)
+
+                if not cr_approved or must_breached:
+                    state = "failed"
+                    desc = "ScopeReview AI found critical issues or MUST requirements that were not met."
+                else:
+                    state = "succeeded"
+                    desc = "ScopeReview AI approved the Pull Request."
+
+                self._ado.post_pr_status(repo_id, pr_id, project, state=state, description=desc)
+
                 # Record metrics
                 t_in = cr_metrics.get("input_tokens", 0) + req_metrics.get("input_tokens", 0)
                 t_out = cr_metrics.get("output_tokens", 0) + req_metrics.get("output_tokens", 0)
@@ -231,6 +250,7 @@ class PipelineOrchestrator:
                 )
             else:
                 log.error("Requirements Validation failed to generate a result.")
+                self._ado.post_pr_status(repo_id, pr_id, project, state="failed", description="Erro interno na validação de requisitos.")
                 metrics.record_analysis(
                     success=False,
                     total_tokens=0,

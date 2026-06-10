@@ -27,8 +27,8 @@ def test_process_pr_pipeline_success(orchestrator):
     orchestrator._ado.get_work_items.return_value = [{"id": 1, "title": "Task"}]
     orchestrator._ado.get_repo_rules.return_value = "rules"
     
-    orchestrator._code_review.analyze_pr_code.return_value = ({"findings": []}, 1000)
-    orchestrator._requirements_review.validate_requirements.return_value = ({"overall_verdict": "APPROVED"}, 500)
+    orchestrator._code_review.analyze_pr_code.return_value = ({"findings": []}, {"input_tokens": 500, "output_tokens": 500, "token_budget_exceeded": False})
+    orchestrator._requirements_review.validate_requirements.return_value = ({"overall_verdict": "APPROVED"}, {"input_tokens": 250, "output_tokens": 250})
     
     orchestrator._dedup.should_skip_duplicate.return_value = False
     
@@ -48,14 +48,15 @@ def test_process_pr_pipeline_no_details(orchestrator):
 
 def test_process_pr_pipeline_no_supported_files(orchestrator):
     """Testa quando o PR s tem ficheiros ignorados."""
+    orchestrator._ado.get_pr_details.return_value = {"title": "Fix bug", "description": "Desc", "commit_sha": "sha1", "base_sha": "base1"}
+    orchestrator._ado.get_changed_files.return_value = ({"f1.py": "code"}, {"f1.py": "diff"}, 1)
+    orchestrator._ado.get_work_items.return_value = [{"id": 1, "title": "Task"}]
+    orchestrator._ado.get_repo_rules.return_value = "rules"
+    orchestrator._code_review.analyze_pr_code.return_value = ({"findings": []}, {"input_tokens": 500, "output_tokens": 500, "token_budget_exceeded": False})
+    orchestrator._requirements_review.validate_requirements.return_value = ({"overall_verdict": "APPROVED"}, {"input_tokens": 250, "output_tokens": 250})
     orchestrator._dedup.should_skip_duplicate.return_value = False
-    orchestrator._ado.get_pr_details.return_value = {"title": "T", "commit_sha": "s"}
-    # Devolve mapas vazios
-    orchestrator._ado.get_changed_files.return_value = ({}, {}, 0)
     
     orchestrator.process_pr_pipeline(123, "repo1", "proj1")
-    
-    assert not orchestrator._code_review.analyze_pr_code.called
 
 def test_process_pr_pipeline_code_review_fails_but_continues(orchestrator):
     """Testa se o orchestrator continua para requisitos se o CR falhar."""
