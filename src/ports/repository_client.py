@@ -2,7 +2,7 @@ from typing import Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 
 @runtime_checkable
-class AzureDevOpsClientPort(Protocol):
+class RepositoryClientPort(Protocol):
     """
     Outbound port: PR / work items / comments (orchestrator use-case).
     File-level helpers stay on the concrete adapter only (ISP).

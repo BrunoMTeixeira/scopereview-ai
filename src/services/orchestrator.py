@@ -2,10 +2,10 @@ import requests
 import time
 
 from ..core.logger import get_logger
-from ..core.triage import triage_files, TriageLevel
+from ..domain.triage import triage_files, TriageLevel
 from ..core.knowledge_ledger import build_ledger, format_ledger_for_prompt
 from ..core.ast_skeleton import compress_map, extract_ac_terms
-from ..ports.ado_client import AzureDevOpsClientPort
+from ..ports.repository_client import RepositoryClientPort
 from ..ports.dedup import PipelineDedupPort
 from .code_review import CodeReviewService
 from .requirements_review import RequirementsReviewService
@@ -32,7 +32,7 @@ class PipelineOrchestrator:
 
     def __init__(
         self,
-        ado: AzureDevOpsClientPort,
+        ado: RepositoryClientPort,
         code_review: CodeReviewService,
         requirements_review: RequirementsReviewService,
         dedup: PipelineDedupPort,

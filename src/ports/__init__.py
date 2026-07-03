@@ -7,8 +7,8 @@ implementations, the core logic remains decoupled from external infrastructure
 such as APIs, databases, or specific LLM providers.
 """
 
-from .ado_client import AzureDevOpsClientPort
+from .repository_client import RepositoryClientPort
 from .ai_client import AIModelClientPort
 from .dedup import PipelineDedupPort
 
-__all__ = ["AIModelClientPort", "AzureDevOpsClientPort", "PipelineDedupPort"]
+__all__ = ["AIModelClientPort", "RepositoryClientPort", "PipelineDedupPort"]

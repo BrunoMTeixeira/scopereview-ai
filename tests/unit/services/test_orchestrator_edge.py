@@ -82,3 +82,38 @@ def test_process_pr_pipeline_dedup_blocks(orchestrator):
     orchestrator.process_pr_pipeline(123, "repo1", "proj1")
     
     assert not orchestrator._ado.get_pr_details.called
+
+def test_orchestrator_empty_files_returns_early(orchestrator):
+    """Testa se o orchestrator aborta caso nao existam ficheiros validos."""
+    orchestrator._ado.get_pr_details.return_value = {"commit_sha": "abc", "base_sha": "xyz"}
+    orchestrator._ado.get_changed_files.return_value = ({}, {}, 0)
+    orchestrator._dedup.should_skip_duplicate.return_value = False
+    
+    orchestrator.process_pr_pipeline(1, "repo", "proj")
+    
+    orchestrator._ado.post_pr_status.assert_called_with("repo", 1, "proj", state="succeeded", description="No valid/supported files to review.")
+    
+def test_orchestrator_posts_truncation_warning(orchestrator):
+    """Testa se emite aviso quando ficheiros excedem MAX_FILES."""
+    orchestrator._ado.get_pr_details.return_value = {"commit_sha": "abc", "base_sha": "xyz"}
+    orchestrator._ado.get_work_items.return_value = []
+    
+    orchestrator._dedup.should_skip_duplicate.return_value = False
+    orchestrator._ado.get_changed_files.return_value = ({"a.py": "code"}, {"a.py": "+code"}, 5)
+    orchestrator._code_review.analyze_pr_code.return_value = ({"findings": []}, {"total_tokens": 10, "token_budget_exceeded": False})
+    orchestrator._requirements_review.validate_requirements.return_value = (None, {"total_tokens": 0})
+    
+    orchestrator.process_pr_pipeline(1, "repo", "proj")
+    
+    calls = orchestrator._ado.post_comment.call_args_list
+    assert any("Aviso de Limite Excedido" in call.args[3] for call in calls)
+
+def test_orchestrator_skips_trivial_files(orchestrator):
+    """Testa se ficheiros trivial (ex: lock files) sofrem skip via Triage e abortam o processo."""
+    orchestrator._dedup.should_skip_duplicate.return_value = False
+    orchestrator._ado.get_pr_details.return_value = {"commit_sha": "abc", "base_sha": "xyz"}
+    orchestrator._ado.get_changed_files.return_value = ({"package-lock.json": "code"}, {"package-lock.json": "+code"}, 1)
+    
+    orchestrator.process_pr_pipeline(1, "repo", "proj")
+    
+    orchestrator._ado.post_pr_status.assert_called_with("repo", 1, "proj", state="succeeded", description="All changed files are trivial (skipped).")

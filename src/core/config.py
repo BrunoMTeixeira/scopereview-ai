@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────────────────────────────────
     # Processing Limits
     # ──────────────────────────────────────────────────────────────────────────
+    MAX_WORKERS: int = Field(default=3, ge=1, le=20, description="Max concurrent background workers for PR processing")
     MAX_FILES: int = Field(default=5, ge=1, le=50, description="Maximum files to analyze per PR")
     MAX_LINES: int = Field(default=2000, ge=50, le=2000, description="Maximum lines to fetch per file")
     MAX_TENTATIVAS: int = Field(default=3, ge=1, le=10, description="Max retry attempts for HTTP calls")

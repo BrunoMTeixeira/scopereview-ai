@@ -3,14 +3,14 @@ from unittest.mock import Mock, MagicMock, patch
 from typing import Dict, Any, List
 
 from src.services.orchestrator import PipelineOrchestrator
-from src.ports.ado_client import AzureDevOpsClientPort
+from src.ports.repository_client import RepositoryClientPort
 from src.ports.ai_client import AIModelClientPort
 from src.ports.dedup import PipelineDedupPort
 from src.services.code_review import CodeReviewService
 from src.services.requirements_review import RequirementsReviewService
 
 
-class MockAzureDevOpsClient(AzureDevOpsClientPort):
+class MockAzureDevOpsClient(RepositoryClientPort):
     """Mock ADO client for testing."""
 
     def __init__(self):

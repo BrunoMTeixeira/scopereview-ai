@@ -4,11 +4,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException, RequestValidationError
 
-from .core.config import validate_settings
+from .core.config import settings, validate_settings
 from .core.logger import setup_logging, get_logger
 from .bootstrap import bootstrap_dependencies
 from .api.webhooks import router as webhooks_router
 from .core.metrics import metrics
+import asyncio
+from .core.worker_pool import pr_worker
 
 # Setup logging before any other imports
 setup_logging()
@@ -55,6 +57,15 @@ async def lifespan(app: FastAPI):
         bootstrap_dependencies()
         _log.info("✓ Dependency injection bootstrapped")
 
+        # Step 3: Start Bounded Worker Pool
+        max_workers = settings.MAX_WORKERS
+        app.state.pr_queue = asyncio.Queue()
+        app.state.workers = []
+        for i in range(max_workers):
+            task = asyncio.create_task(pr_worker(i, app.state.pr_queue))
+            app.state.workers.append(task)
+        _log.info("✓ Started %d background workers for PR processing", max_workers)
+
         _log.info("=" * 80)
         _log.info("✓ Application ready to serve requests")
         _log.info("=" * 80)
@@ -70,6 +81,16 @@ async def lifespan(app: FastAPI):
     _log.info("=" * 80)
     _log.info("ScopeReview AI — Application Shutdown")
     _log.info("=" * 80)
+    
+    # Gracefully shutdown workers
+    workers = getattr(app.state, "workers", [])
+    if workers:
+        _log.info("Cancelling %d background workers...", len(workers))
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        _log.info("✓ Background workers shut down")
+
     _log.info("✓ Application stopped cleanly")
 
 

@@ -10,7 +10,7 @@ from src.composition import (
 )
 from src.services.orchestrator import PipelineOrchestrator
 from src.ports.ai_client import AIModelClientPort
-from src.ports.ado_client import AzureDevOpsClientPort
+from src.ports.repository_client import RepositoryClientPort
 
 
 class TestSimpleDependencyInjector:
@@ -141,7 +141,7 @@ class TestCompositionBootstrap:
     def test_get_pipeline_orchestrator_returns_registered_instance(self):
         """Test that get_pipeline_orchestrator returns the registered instance."""
         # Arrange
-        mock_ado = Mock(spec=AzureDevOpsClientPort)
+        mock_ado = Mock(spec=RepositoryClientPort)
         mock_ai = Mock(spec=AIModelClientPort)
         mock_orchestrator = Mock(spec=PipelineOrchestrator)
 

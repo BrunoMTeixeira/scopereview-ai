@@ -28,7 +28,7 @@ os.environ.setdefault("ADO_PAT", "test-pat")
 
 from src.core.di import injector  # noqa: E402
 from src.core import config  # noqa: E402
-from src.ports.ado_client import AzureDevOpsClientPort  # noqa: E402
+from src.ports.repository_client import RepositoryClientPort  # noqa: E402
 from src.ports.ai_client import AIModelClientPort  # noqa: E402
 from src.ports.dedup import PipelineDedupPort  # noqa: E402
 
@@ -37,7 +37,7 @@ from src.ports.dedup import PipelineDedupPort  # noqa: E402
 # MOCK ADAPTERS (Port implementations for testing)
 # ──────────────────────────────────────────────────────────────────────────────
 
-class MockAzureDevOpsClient(AzureDevOpsClientPort):
+class MockAzureDevOpsClient(RepositoryClientPort):
     """In-memory ADO client stub. Records all post_comment calls for assertions."""
 
     def __init__(self):

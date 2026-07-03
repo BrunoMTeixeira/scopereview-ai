@@ -12,8 +12,8 @@ Developed at **DevScope** / **ISEP** (internship 2025/2026).
 
 1. **Azure DevOps** sends a **Service Hook** when a PR is created or updated (`git.pullrequest.*`).
 2. **FastAPI** accepts the payload, validates size / optional **Basic auth**, returns **202 Accepted** immediately, and
-   schedules a **background pipeline**.
-3. **Pipeline** fetches PR + files + Work Items from ADO REST **v7.1**.
+   pushes the event to a resilient **in-memory asyncio Queue**.
+3. **Worker Pool** (`MAX_WORKERS`) safely consumes the queue, fetching PR + files + Work Items from ADO REST **v7.1**.
 4. **Code Review Agent** runs **guided by pre-loaded Requirements** + **Polyglot Static Analyzer** + **LLM** on diffs →
    posts a **Markdown** thread.
 5. **Requirements Agent** runs **LLM** over **raw compressed source files** + AC + rules + injected CR findings → *
@@ -24,7 +24,7 @@ Developed at **DevScope** / **ISEP** (internship 2025/2026).
 graph TD
     A["ADO Webhook"]
     B["FastAPI<br/>/webhook/orchestrate"]
-    C["BackgroundTasks"]
+    C["asyncio.Queue<br/>(Worker Pool)"]
     D["PipelineOrchestrator"]
     E["CodeReviewService"]
     F["ADO comment<br/>Code Review"]
@@ -71,7 +71,7 @@ Orchestration: **`PipelineOrchestrator`** in `src.services.orchestrator`. Wiring
 | **Domain policy**                | `src/domain/requirements_verdict.py` — **canonical verdict enforcement** (MUST gate is absolute); LLM output may be overridden                                                       |
 | **Verdict normalization**        | LLM output → `json-repair` → Pydantic validation → **domain rules** → final authoritative verdict (see [Architecture](./Architecture.md))                                            |
 | **JSON resilience**              | `src/core/llm_json.py` — sanitize + `json-repair` + configurable `REQUIREMENTS_MAX_COMPLETION_TOKENS`                                                                                |
-| **Config**                       | Configuration is validated at startup; set `ENVIRONMENT=dev` for local development and HTTP AI mock endpoints.        |
+| **Config**                       | Configuration is validated at startup (`MAX_WORKERS` controls concurrency); set `ENVIRONMENT=dev` for local development.        |
 | **Security**                     | Webhook errors do not leak secrets; PAT / keys via env only; no data sent to third-party SaaS                                                                                        |
 
 ---
@@ -103,14 +103,14 @@ src/
   core/triage.py       # Semantic Triage Gate (SKIP/LIGHT/FULL)
   core/knowledge_ledger.py  # Cross-Agent Knowledge Ledger (NFR dedup)
   core/ast_skeleton.py      # AC-Aware Context Pruning (code compression)
-  core/               # config, logger, llm_json, pipeline_dedup, rate_limit, metrics, resilience
-  domain/              # requirements_verdict (pure rules)
-  ports/               # Protocol interfaces (AI, ADO, Dedup)
-  infra/               # Azure OpenAI, ADO REST, Redis adapters
+  core/                # config, logger, llm_json, pipeline_dedup, rate_limit, worker_pool, metrics, resilience
+  domain/              # code_verdict, requirements_verdict, triage (pure rules, DDD)
+  ports/               # Protocol interfaces (AI, DevOps, Dedup)
+  infra/               # Azure OpenAI, Azure DevOps REST, Redis adapters
   services/            # orchestrator, code_review, requirements_review, static_analyzer
   models/              # Pydantic models (ADO Webhook + AI results)
   templates/           # prompts.py, markdown.py
-tests/                 # pytest suite (unit + integration + system + e2e) — 201 tests @ 91.6% coverage
+tests/                 # pytest suite (unit + integration + system + e2e) — 214 tests @ 92.8% coverage
 docker-compose.yml     # agent + redis
 ```
 

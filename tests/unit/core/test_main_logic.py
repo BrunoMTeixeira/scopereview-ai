@@ -33,17 +33,17 @@ def test_global_exception_handler_trigger(env_setup, disable_webhook_auth):
     """Testa se o tratador global captura um erro 500 forçado."""
     from src.composition import get_pipeline_orchestrator
 
-    def failing_orchestrator():
-        raise RuntimeError("Forced Error")
-
-    app.dependency_overrides[get_pipeline_orchestrator] = failing_orchestrator
-
     # IMPORTANTE: raise_server_exceptions=False para permitir que o app capture o erro
     with TestClient(app, raise_server_exceptions=False) as client:
+        from unittest.mock import MagicMock, patch, PropertyMock
         with patch("src.api.webhooks.injector.get") as mock_get:
             mock_limiter = MagicMock()
             mock_limiter.is_allowed.return_value = True
             mock_get.return_value = mock_limiter
+            
+            # Force an error by corrupting the state
+            client.app.state = MagicMock()
+            type(client.app.state).pr_queue = PropertyMock(side_effect=RuntimeError("Forced Error"))
             payload = {
                 "eventType": "git.pullrequest.created",
                 "resourceVersion": "1.0",

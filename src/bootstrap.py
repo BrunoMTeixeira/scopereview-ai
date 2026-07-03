@@ -6,7 +6,7 @@ from .infra.azure_ai import AzureOpenAIClient
 from .infra.azure_devops import AzureDevOpsClient
 from .ports.dedup import PipelineDedupPort
 from .ports.ai_client import AIModelClientPort
-from .ports.ado_client import AzureDevOpsClientPort
+from .ports.repository_client import RepositoryClientPort
 from .services.code_review import CodeReviewService
 from .services.requirements_review import RequirementsReviewService
 from .services.static_analyzer import StaticAnalyzer
@@ -138,7 +138,7 @@ def bootstrap_dependencies() -> None:
         # ===== Register in DI Container =====
 
         register_service(AIModelClientPort, code_review_ai)
-        register_service(AzureDevOpsClientPort, ado_client)
+        register_service(RepositoryClientPort, ado_client)
         register_service(PipelineDedupPort, dedup)
         register_service(StaticAnalyzer, static_analyzer)
         register_service(CodeReviewService, code_review_service)

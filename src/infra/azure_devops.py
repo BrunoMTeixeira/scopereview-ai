@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..core.logger import get_logger
 from ..core.resilience import with_retry_on_transient_http_errors, with_fallback
-from ..core.triage import SKIP_EXTENSIONS
+from ..domain.triage import SKIP_EXTENSIONS
 
 log = get_logger("ADO")
 
@@ -73,7 +73,7 @@ def _generate_numbered_diff(base_lines: List[str], target_lines: List[str], from
 class AzureDevOpsClient:
     """REST adapter for Azure DevOps Services API.
 
-    This client implements the AzureDevOpsClientPort and provides methods to
+    This client implements the RepositoryClientPort and provides methods to
     interact with PRs, files, work items, and threads.
     """
 

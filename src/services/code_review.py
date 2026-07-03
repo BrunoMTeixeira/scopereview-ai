@@ -9,26 +9,17 @@ from ..ports.ai_client import AIModelClientPort
 from ..core.ast_skeleton import skeletonize_file  # 🆕 IMPORT SKELETONIZER
 from .static_analyzer import StaticAnalyzer
 from ..templates.prompts import build_code_review_prompt, CODE_REVIEW_SYSTEM_PROMPT
+from ..domain.code_verdict import CodeReviewVerdict
 
 log = get_logger("CodeReview")
 
 
 class CodeReviewService:
-    """Orchestrates static and AI-based code analysis for Pull Requests.
+    """Service for analyzing code changes in Pull Requests using AI.
 
-    Attributes:
-        _ai: Adapter for the AI model client.
-        _max_high_block: Threshold for high-severity findings to block PR.
-        _max_token_budget: Token consumption limit for AI analysis.
+    Extracts potential issues and positive aspects from code diffs,
+    delegating the final verdict logic to the CodeReviewVerdict domain.
     """
-
-    _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-    _SEVERITY_PENALTIES = {
-        "critical": 3.0,
-        "high": 1.5,
-        "medium": 0.5,
-        "low": 0.15,
-    }
 
     def __init__(self, ai: AIModelClientPort, max_high_block: int, max_token_budget: int):
         """Initializes the CodeReviewService.
@@ -91,7 +82,9 @@ class CodeReviewService:
         )
         if raw_json:
             try:
-                return parse_llm_json_object(raw_json, log_context="CodeReview"), usage
+                result = parse_llm_json_object(raw_json, log_context="CodeReview")
+                result["_usage"] = usage
+                return result, usage
             except Exception as e:
                 log.error("Failed to parse AI Code Review JSON: %s", str(e))
         return None, usage
@@ -117,11 +110,8 @@ class CodeReviewService:
             (findings, score, approval) and execution metrics.
         """
         start_time = time.time()
+        raw_results = []
         total_tokens = 0
-        total_input_tokens = 0
-        total_output_tokens = 0
-        total_reasoning_tokens = 0
-        all_f, all_p = [], []
         budget_exceeded = False
 
         # Pre-calculate skeletons to share across blocks
@@ -130,12 +120,14 @@ class CodeReviewService:
             for path, content in mapa_full.items():
                 skeletons[path] = skeletonize_file(path, content)
 
+        # 1. Static Analysis
         for path, content in mapa_diffs.items():
             static_findings = StaticAnalyzer.analyze_file(path, content)
             if static_findings:
                 log.info("  [STATIC] '%s' — %d finding(s)", path, len(static_findings))
-                all_f.extend(static_findings)
+                raw_results.append({"findings": static_findings, "_source": "static"})
 
+        # 2. AI Analysis
         for path, content in mapa_diffs.items():
             blocos = self._dividir_em_blocos(content)
             context_header = self._build_context_header(content)
@@ -145,54 +137,54 @@ class CodeReviewService:
 
             for i, b in enumerate(blocos):
                 if total_tokens >= self._max_token_budget:
-                    log.warning(
-                        "Token budget (%s) reached at block %s/%s for '%s'; skipping remaining LLM blocks.",
-                        self._max_token_budget,
-                        i + 1,
-                        len(blocos),
-                        path,
-                    )
                     budget_exceeded = True
                     break
 
-                log.info("  [BLOCK %d/%d]", i + 1, len(blocos))
                 res, usage = self._analisar_bloco(
                     caminho=path,
                     bloco=context_header + b,
                     work_items=work_items,
                     skeleton=skeleton_context,
                 )
-
-                input_tok = usage.get("prompt_tokens", 0)
-                output_tok = usage.get("completion_tokens", 0)
-                reason_tok = usage.get("reasoning_tokens", 0)
-
-                total_input_tokens += input_tok
-                total_output_tokens += output_tok
-                total_reasoning_tokens += reason_tok
-                total_tokens = total_input_tokens + total_output_tokens
-                if not res:
-                    continue
-
-                for f in res.get("findings", []):
-                    f["file"] = path
-                    all_f.append(f)
-                all_p.extend(res.get("positive_aspects", []))
+                if res:
+                    for f in res.get("findings", []):
+                        f["file"] = path
+                    raw_results.append(res)
+                
+                total_tokens += usage.get("total_tokens", 0)
 
             if budget_exceeded:
                 break
 
-        metrics = {
-            "time": round(time.time() - start_time, 1),
-            "tokens": total_tokens,
-            "input_tokens": total_input_tokens,
-            "output_tokens": total_output_tokens,
-            "reasoning_tokens": total_reasoning_tokens,
-            "token_budget_exceeded": budget_exceeded,
-        }
+        # 3. Aggregate and evaluate verdict
+        result, metrics = self._normalize_and_aggregate(raw_results, mapa_diffs)
+        metrics["time"] = round(time.time() - start_time, 1)
+        metrics["token_budget_exceeded"] = budget_exceeded
+        
+        return result, metrics
 
-        if not all_f:
-            return None, metrics
+    def _normalize_and_aggregate(self, raw_results: List[dict], mapa_diffs: Dict[str, str]) -> tuple[dict, dict]:
+        """Deduplicates findings across multiple files and calculates the verdict.
+
+        Delegates business logic to the domain model (CodeReviewVerdict).
+        """
+        all_f = []
+        all_p = []
+        total_tokens = 0
+        total_reasoning = 0
+        total_input = 0
+        total_output = 0
+
+        for res in raw_results:
+            if not res:
+                continue
+            all_f.extend(res.get("findings", []))
+            all_p.extend(res.get("positive_aspects", []))
+            usage = res.get("_usage", {})
+            total_tokens += usage.get("total_tokens", 0)
+            total_reasoning += usage.get("reasoning_tokens", 0)
+            total_input += usage.get("prompt_tokens", 0)
+            total_output += usage.get("completion_tokens", 0)
 
         # ── Finding Enrichment & Post-processing ──────────────────────────────
         # 1. Pre-compute a line cache from mapa_diffs for absolute code accuracy
@@ -204,57 +196,36 @@ class CodeReviewService:
                     try:
                         num = int(d_line.split("|")[0].strip())
                         code_piece = d_line.split("|", 1)[-1]
-                        # FIX: Never cache DELETED code lines. This prevents base-file lines from colliding
-                        # with target-file lines sharing the same line counter in the Cache drawer.
                         if code_piece.lstrip().startswith("-"):
                             continue
-                        file_cache[num] = code_piece  # preserves diff marker + code
+                        file_cache[num] = code_piece
                     except ValueError:
                         continue
             line_cache[path] = file_cache
 
-        # 2. Standardize, clean, and sort
-        vistos, unique_f = set(), []
-        sorted_all_f = sorted(all_f, key=lambda x: 0 if x.get("_source") == "static" else 1)
-
-        # 3. Iterate and enrich lazy/missing code snippets automatically
-        for f in sorted_all_f:
+        # 2. Iterate and enrich lazy/missing code snippets automatically
+        for f in all_f:
             path = f.get("file")
             line = f.get("line")
 
-            # If LLM returned a lazy numeric placeholder as code, replace it with actual code from our file cache
             vuln_list = f.get("vulnerable_code") or []
             is_lazy = not vuln_list or all(str(line) in str(v).strip() and len(str(v).strip()) < 8 for v in vuln_list)
 
             if is_lazy and path in line_cache and line in line_cache[path]:
-                # Inject true code snippet with diff alignment
                 f["vulnerable_code"] = [line_cache[path][line].rstrip()]
             elif vuln_list and not any("|" in str(v) for v in vuln_list) and path in line_cache and line in line_cache[path]:
-                # Extra touch: If code exists but lacks formatting, normalize with cache's formatted line
                 f["vulnerable_code"] = [line_cache[path][line].rstrip()]
 
-        for f in sorted_all_f:
-            # Reduced collapsing window from 3 to 1 to separate adjacent line findings (e.g. sequential unused imports)
-            line_group = (f.get("line") or 0) // 1 if f.get("line") is not None else 0
-            key = (f.get("file"), line_group, f.get("type"))
-            if key not in vistos:
-                vistos.add(key)
-                unique_f.append(f)
+        # Delegate business rules to the Domain Layer
+        verdict_engine = CodeReviewVerdict(self._max_high_block)
+        unique_f, final_score, approved = verdict_engine.evaluate(all_f)
 
-        unique_f.sort(key=lambda x: self._SEVERITY_ORDER.get(x.get("severity", "low"), 99))
-
-        # Deterministic scoring: start at 10 and subtract penalties per finding
-        total_penalty = sum(self._SEVERITY_PENALTIES.get(f.get("severity", "low"), 0) for f in unique_f)
-        final_score = max(1, min(10, round(10 - total_penalty)))
-
-        sevs_list = [f.get("severity") for f in unique_f]
-        num_high = sevs_list.count("high")
-        has_critical = "critical" in sevs_list
-
-        # Approval logic: Block if any Critical, too many High, or Score < 7
-        approved = not (has_critical or num_high >= self._max_high_block or final_score < 7)
-
-        log.info("Code Review Score: %s/10 (Penalty: %.2f) -> Approved: %s", final_score, total_penalty, approved)
+        metrics = {
+            "tokens": total_tokens,
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "reasoning_tokens": total_reasoning,
+        }
 
         return {
             "findings": unique_f,

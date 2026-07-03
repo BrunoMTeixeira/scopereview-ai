@@ -132,9 +132,10 @@ async def test_webhook_orchestrate_ignored_event():
                 }
             }
         )
-        background_tasks = MagicMock(spec=BackgroundTasks)
+        from fastapi import Request
+        mock_request = MagicMock(spec=Request)
         
-        response = await webhook_orchestrate(payload, background_tasks)
+        response = await webhook_orchestrate(mock_request, payload)
         assert response.status_code == 200
         assert b"not supported" in response.body
 
@@ -158,9 +159,10 @@ async def test_webhook_orchestrate_inactive_pr():
                 }
             }
         )
-        background_tasks = MagicMock(spec=BackgroundTasks)
+        from fastapi import Request
+        mock_request = MagicMock(spec=Request)
         
-        response = await webhook_orchestrate(payload, background_tasks)
+        response = await webhook_orchestrate(mock_request, payload)
         assert response.status_code == 200
         assert b"only 'active' PRs" in response.body
 
