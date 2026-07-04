@@ -112,6 +112,7 @@ def bootstrap_dependencies() -> None:
 
         code_review_service = CodeReviewService(
             ai=code_review_ai,
+            static_analyzer=static_analyzer,
             max_high_block=settings.MAX_HIGH_BLOCK,
             max_token_budget=settings.MAX_TOKEN_BUDGET,
         )

@@ -1,6 +1,7 @@
 import json
 import re
 import time
+import asyncio
 from typing import Dict, List, Optional
 
 from ..core.logger import get_logger
@@ -21,17 +22,20 @@ class CodeReviewService:
     delegating the final verdict logic to the CodeReviewVerdict domain.
     """
 
-    def __init__(self, ai: AIModelClientPort, max_high_block: int, max_token_budget: int):
+    def __init__(self, ai: AIModelClientPort, static_analyzer: StaticAnalyzer, max_high_block: int, max_token_budget: int):
         """Initializes the CodeReviewService.
 
         Args:
             ai: The AI model client adapter.
+            static_analyzer: Injected static code analyzer service.
             max_high_block: Max high-severity findings allowed before blocking.
             max_token_budget: Maximum tokens to consume per PR analysis.
         """
         self._ai = ai
+        self._static_analyzer = static_analyzer
         self._max_high_block = max_high_block
         self._max_token_budget = max_token_budget
+        self._concurrency_limit = asyncio.Semaphore(5) # Limita a 5 blocos simultâneos para evitar rate limits
 
     @staticmethod
     def _build_context_header(content: str) -> str:
@@ -58,7 +62,7 @@ class CodeReviewService:
                 atual = ""
         return blocos if blocos else [conteudo]
 
-    def _analisar_bloco(
+    async def _analisar_bloco(
         self,
         caminho: str,
         bloco: str,
@@ -76,7 +80,7 @@ class CodeReviewService:
             work_items=work_items,
             skeleton=skeleton
         )
-        raw_json, usage = self._ai.complete(
+        raw_json, usage = await self._ai.complete(
             system_prompt=CODE_REVIEW_SYSTEM_PROMPT,
             user_prompt=prompt,
         )
@@ -89,7 +93,7 @@ class CodeReviewService:
                 log.error("Failed to parse AI Code Review JSON: %s", str(e))
         return None, usage
 
-    def analyze_pr_code(
+    async def analyze_pr_code(
         self,
         mapa_diffs: Dict[str, str],
         mapa_full: Dict[str, str] = None,
@@ -122,12 +126,13 @@ class CodeReviewService:
 
         # 1. Static Analysis
         for path, content in mapa_diffs.items():
-            static_findings = StaticAnalyzer.analyze_file(path, content)
+            static_findings = self._static_analyzer.analyze_file(path, content)
             if static_findings:
                 log.info("  [STATIC] '%s' — %d finding(s)", path, len(static_findings))
                 raw_results.append({"findings": static_findings, "_source": "static"})
 
-        # 2. AI Analysis
+        # 2. AI Analysis - Parallel Execution using gather
+        tasks = []
         for path, content in mapa_diffs.items():
             blocos = self._dividir_em_blocos(content)
             context_header = self._build_context_header(content)
@@ -135,26 +140,33 @@ class CodeReviewService:
 
             log.info("Analysing '%s' — %d block(s)", path, len(blocos))
 
-            for i, b in enumerate(blocos):
-                if total_tokens >= self._max_token_budget:
-                    budget_exceeded = True
-                    break
+            for b in blocos:
+                # Local wrapper function to apply semaphore and context mapping
+                async def sem_task(c_path=path, c_bloco=context_header + b, c_skeleton=skeleton_context):
+                    async with self._concurrency_limit:
+                        res, usage = await self._analisar_bloco(
+                            caminho=c_path,
+                            bloco=c_bloco,
+                            work_items=work_items,
+                            skeleton=c_skeleton,
+                        )
+                        return c_path, res, usage
 
-                res, usage = self._analisar_bloco(
-                    caminho=path,
-                    bloco=context_header + b,
-                    work_items=work_items,
-                    skeleton=skeleton_context,
-                )
-                if res:
-                    for f in res.get("findings", []):
-                        f["file"] = path
-                    raw_results.append(res)
-                
-                total_tokens += usage.get("total_tokens", 0)
+                tasks.append(sem_task())
 
-            if budget_exceeded:
-                break
+        # Execute all AI block analyses concurrently
+        task_results = await asyncio.gather(*tasks)
+
+        # Process results
+        for path, res, usage in task_results:
+            if res:
+                for f in res.get("findings", []):
+                    f["file"] = path
+                raw_results.append(res)
+            
+            total_tokens += usage.get("total_tokens", 0)
+            if total_tokens >= self._max_token_budget:
+                budget_exceeded = True
 
         # 3. Aggregate and evaluate verdict
         result, metrics = self._normalize_and_aggregate(raw_results, mapa_diffs)
@@ -193,14 +205,14 @@ class CodeReviewService:
             file_cache = {}
             for d_line in diff_content.splitlines():
                 if "|" in d_line:
-                    try:
-                        num = int(d_line.split("|")[0].strip())
-                        code_piece = d_line.split("|", 1)[-1]
+                    # Robust regex mapping to resist | characters inside code itself
+                    match = re.match(r"^[+\-\s]*(\d+)\s*\|(.*)", d_line)
+                    if match:
+                        num = int(match.group(1))
+                        code_piece = match.group(2)
                         if code_piece.lstrip().startswith("-"):
                             continue
                         file_cache[num] = code_piece
-                    except ValueError:
-                        continue
             line_cache[path] = file_cache
 
         # 2. Iterate and enrich lazy/missing code snippets automatically

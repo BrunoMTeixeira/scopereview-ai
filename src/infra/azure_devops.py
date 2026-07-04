@@ -2,7 +2,8 @@ import base64
 import difflib
 import html
 import re
-import requests
+import httpx
+import asyncio
 from typing import Dict, List, Optional, Tuple
 
 from ..core.logger import get_logger
@@ -100,29 +101,28 @@ class AzureDevOpsClient:
         self._max_files = max_files
         self._max_lines = max_lines
         self._request_timeout = request_timeout
-        self._session = requests.Session()
-        self._session.headers.update(self._ado_headers())
+        self._client = httpx.AsyncClient(headers=self._ado_headers(), timeout=self._request_timeout)
 
     def _ado_headers(self) -> dict:
         token = base64.b64encode(f":{self._pat}".encode()).decode()
         return {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
 
-    def get_commit_head(self, repo_id: str, pr_id: int, project: str) -> str:
+    async def get_commit_head(self, repo_id: str, pr_id: int, project: str) -> str:
         """Returns the HEAD commit SHA of the Pull Request."""
         url = (
             f"https://dev.azure.com/{self._organization}/{project}"
             f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}?api-version=7.1"
         )
         try:
-            resp = self._session.get(url, timeout=self._request_timeout)
+            resp = await self._client.get(url)
             resp.raise_for_status()
             return resp.json().get("lastMergeSourceCommit", {}).get("commitId", "")
-        except requests.RequestException as exc:
+        except httpx.RequestError as exc:
             log.error("Failed to get HEAD commit: %s", exc)
             return ""
 
     @with_retry_on_transient_http_errors(max_attempts=3)
-    def get_pr_details(self, repo_id: str, pr_id: int, project: str) -> Optional[dict]:
+    async def get_pr_details(self, repo_id: str, pr_id: int, project: str) -> Optional[dict]:
         """Returns title, description, commit_sha and base_sha of the PR.
 
         Automatically retries on transient failures (5xx, 429, network errors).
@@ -132,7 +132,7 @@ class AzureDevOpsClient:
             f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}?api-version=7.1"
         )
         try:
-            resp = self._session.get(url, timeout=self._request_timeout)
+            resp = await self._client.get(url)
             resp.raise_for_status()
             data = resp.json()
             return {
@@ -142,11 +142,11 @@ class AzureDevOpsClient:
                 "commit_sha": data.get("lastMergeSourceCommit", {}).get("commitId", ""),
                 "base_sha": data.get("lastMergeTargetCommit", {}).get("commitId", ""),
             }
-        except requests.RequestException as exc:
+        except httpx.RequestError as exc:
             log.error("Failed to fetch PR details: %s", exc)
             return None
 
-    def get_file_content(self, repo_id: str, project: str, path: str, commit_sha: str) -> str:
+    async def get_file_content(self, repo_id: str, project: str, path: str, commit_sha: str) -> str:
         """Downloads the raw file at the given commit SHA."""
         url = (
             f"https://dev.azure.com/{self._organization}/{project}"
@@ -155,31 +155,31 @@ class AzureDevOpsClient:
             f"&versionDescriptor.versionType=commit&api-version=7.1"
         )
         try:
-            resp = self._session.get(url, timeout=self._request_timeout, stream=True)
-            if resp.status_code == 404:
-                return ""
-            resp.raise_for_status()
+            async with self._client.stream("GET", url) as resp:
+                if resp.status_code == 404:
+                    return ""
+                resp.raise_for_status()
 
-            # Senior improvement: Check Content-Length before reading the full body
-            content_length = resp.headers.get("Content-Length")
-            if content_length and int(content_length) > _MAX_FILE_DOWNLOAD_BYTES:
-                log.warning("File %s is too large (%s bytes), skipping download", path, content_length)
-                return f"[FILE TOO LARGE: {content_length} bytes]"
+                content_length = resp.headers.get("Content-Length")
+                if content_length and int(content_length) > _MAX_FILE_DOWNLOAD_BYTES:
+                    log.warning("File %s is too large (%s bytes), skipping download", path, content_length)
+                    return f"[FILE TOO LARGE: {content_length} bytes]"
 
-            return resp.text
-        except requests.RequestException as exc:
+                await resp.aread()
+                return resp.text
+        except httpx.RequestError as exc:
             log.warning("Failed to read file %s at %s: %s", path, commit_sha, exc)
             return ""
 
-    def get_file_diff(self, repo_id: str, project: str, path: str, commit_sha: str) -> str:
+    async def get_file_diff(self, repo_id: str, project: str, path: str, commit_sha: str) -> str:
         """Downloads the file at the given commit SHA and formats it with line numbers."""
-        texto = self.get_file_content(repo_id, project, path, commit_sha)
+        texto = await self.get_file_content(repo_id, project, path, commit_sha)
         if not texto:
             return ""
         linhas = texto.splitlines()[: self._max_lines]
         return "\n".join([f"{i + 1:>4} | {l}" for i, l in enumerate(linhas)])
 
-    def get_changed_files(
+    async def get_changed_files(
         self,
         repo_id: str,
         pr_id: int,
@@ -195,7 +195,7 @@ class AzureDevOpsClient:
         mapa_full: Dict[str, str] = {}
         mapa_diffs: Dict[str, str] = {}
         try:
-            resp = self._session.get(url, timeout=self._request_timeout)
+            resp = await self._client.get(url)
             resp.raise_for_status()
             iterations = resp.json().get("value") or []
             if not iterations:
@@ -208,7 +208,7 @@ class AzureDevOpsClient:
                 f"https://dev.azure.com/{self._organization}/{project}"
                 f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations/{iter_id}/changes?api-version=7.1"
             )
-            resp_changes = self._session.get(url_changes, timeout=self._request_timeout)
+            resp_changes = await self._client.get(url_changes)
             resp_changes.raise_for_status()
             changes = resp_changes.json().get("changeEntries", [])
 
@@ -228,7 +228,7 @@ class AzureDevOpsClient:
 
             for change, path in eligible_changes[: self._max_files]:
                 # Get RAW content truncated to max lines (for AST/Compressor)
-                raw_source = self.get_file_content(repo_id, project, path, commit_sha)
+                raw_source = await self.get_file_content(repo_id, project, path, commit_sha)
                 if raw_source:
                     truncated_lines = raw_source.splitlines()[: self._max_lines]
                     conteudo_full_raw = "\n".join(truncated_lines)
@@ -244,7 +244,7 @@ class AzureDevOpsClient:
                     )
 
                 if base_sha:
-                    raw_base = self.get_file_content(repo_id, project, path, base_sha)
+                    raw_base = await self.get_file_content(repo_id, project, path, base_sha)
                     raw_target = raw_source
                     base_lines = [l + "\n" for l in raw_base.splitlines()[: self._max_lines]]
                     target_lines = [l + "\n" for l in raw_target.splitlines()[: self._max_lines]]
@@ -257,13 +257,13 @@ class AzureDevOpsClient:
                     mapa_diffs[path] = conteudo_diff_formatted
 
             return mapa_full, mapa_diffs, total_eligible
-        except requests.RequestException as exc:
+        except httpx.RequestError as exc:
             log.error("Failed to list changed files: %s", exc)
             return {}, {}, 0
 
     @with_retry_on_transient_http_errors(max_attempts=3)
     @with_fallback(fallback_value=[])
-    def get_work_items(self, repo_id: str, pr_id: int, project: str) -> List[dict]:
+    async def get_work_items(self, repo_id: str, pr_id: int, project: str) -> List[dict]:
         """Fetches all work items linked to a Pull Request.
 
         Args:
@@ -283,7 +283,7 @@ class AzureDevOpsClient:
         )
         wi_list: List[dict] = []
         try:
-            resp_threads = self._session.get(url_threads, timeout=self._request_timeout)
+            resp_threads = await self._client.get(url_threads)
             resp_threads.raise_for_status()
             refs = resp_threads.json().get("value", [])
 
@@ -292,9 +292,8 @@ class AzureDevOpsClient:
                 if not wi_url:
                     continue
 
-                resp_wi = self._session.get(
-                    f"{wi_url}?$expand=relations&api-version=7.1",
-                    timeout=self._request_timeout,
+                resp_wi = await self._client.get(
+                    f"{wi_url}?$expand=relations&api-version=7.1"
                 )
                 if resp_wi.status_code == 200:
                     wi_data = resp_wi.json()
@@ -312,11 +311,11 @@ class AzureDevOpsClient:
                         }
                     )
             return wi_list
-        except requests.RequestException as exc:
+        except httpx.RequestError as exc:
             log.error("Failed to fetch linked Work Items: %s", exc)
             return []
 
-    def get_repo_rules(self, repo_id: str, project: str, commit_sha: str) -> str:
+    async def get_repo_rules(self, repo_id: str, project: str, commit_sha: str) -> str:
         """Fetches .codereview.yml or .requirements.yml from the root."""
         for rule_file in [".codereview.yml", ".requirements.yml"]:
             url = (
@@ -326,14 +325,14 @@ class AzureDevOpsClient:
                 f"&versionDescriptor.versionType=commit&api-version=7.1"
             )
             try:
-                resp = self._session.get(url, timeout=self._request_timeout)
+                resp = await self._client.get(url)
                 if resp.status_code == 200:
                     return resp.text
-            except requests.RequestException:
+            except httpx.RequestError:
                 pass
         return ""
 
-    def post_comment(self, repo_id: str, pr_id: int, project: str, comment: str) -> None:
+    async def post_comment(self, repo_id: str, pr_id: int, project: str, comment: str) -> None:
         """Publishes a summary thread comment on the Pull Request.
 
         Uses the ADO Threads API to create a new discussion thread.
@@ -348,13 +347,13 @@ class AzureDevOpsClient:
         }
         log.debug("Posting thread to PR #%s (Project: %s, Length: %d chars)", pr_id, project, len(comment))
         try:
-            resp = self._session.post(url, json=payload, timeout=self._request_timeout)
+            resp = await self._client.post(url, json=payload)
             resp.raise_for_status()
             log.info("Successfully posted comment to PR #%s", pr_id)
-        except requests.RequestException as exc:
+        except httpx.RequestError as exc:
             log.error("Failed to post PR comment: %s", exc)
 
-    def post_pr_status(self, repo_id: str, pr_id: int, project: str, state: str, description: str) -> None:
+    async def post_pr_status(self, repo_id: str, pr_id: int, project: str, state: str, description: str) -> None:
         """Publishes a Status Check on the Pull Request.
 
 
@@ -379,8 +378,8 @@ class AzureDevOpsClient:
         }
         log.debug("Posting PR status '%s' to PR #%s", state, pr_id)
         try:
-            resp = self._session.post(url, json=payload, timeout=self._request_timeout)
+            resp = await self._client.post(url, json=payload)
             resp.raise_for_status()
             log.info("Successfully posted PR status '%s' to PR #%s", state, pr_id)
-        except requests.RequestException as exc:
+        except httpx.RequestError as exc:
             log.error("Failed to post PR status: %s", exc)

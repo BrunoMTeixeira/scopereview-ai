@@ -1,4 +1,4 @@
-import requests
+import httpx
 from typing import Optional, Tuple
 
 from ..core.llm_json import sanitize_llm_json_fragment
@@ -23,6 +23,7 @@ class AzureOpenAIClient:
         self._api_key = api_key
         self._model_name = model_name
         self._max_retries = max_retries
+        self._client = httpx.AsyncClient(timeout=180.0)
 
     def _build_payload(self, system_prompt: str, user_prompt: str, max_tokens: int) -> dict:
         """Constructs the LLM payload, dynamically handling O-series API constraints.
@@ -52,7 +53,7 @@ class AzureOpenAIClient:
         }
 
     @with_retry_on_transient_http_errors(max_attempts=3, min_wait=2, max_wait=20)
-    def complete(
+    async def complete(
         self,
         system_prompt: str,
         user_prompt: str,
@@ -60,7 +61,7 @@ class AzureOpenAIClient:
         max_tokens: int = 8000,
     ) -> Tuple[Optional[str], dict]:
         """
-        Sends the prompt to Azure AI Foundry.
+        Sends the prompt to Azure AI Foundry asynchronously.
         Handled by the @with_retry_on_transient_http_errors decorator for 429s/5xx.
         """
         headers = {
@@ -71,7 +72,7 @@ class AzureOpenAIClient:
 
         payload = self._build_payload(system_prompt, user_prompt, max_tokens)
 
-        resp = requests.post(self._endpoint, headers=headers, json=payload, timeout=180)
+        resp = await self._client.post(self._endpoint, headers=headers, json=payload)
         resp.raise_for_status()
 
         data = resp.json()

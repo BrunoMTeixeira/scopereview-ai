@@ -1,5 +1,4 @@
 import asyncio
-import anyio
 from typing import Tuple
 
 from ..core.logger import get_logger
@@ -26,11 +25,8 @@ async def pr_worker(worker_id: int, pr_queue: asyncio.Queue) -> None:
             # Dynamically resolve orchestrator from the DI container for each task
             orchestrator = injector.get(PipelineOrchestrator)
             
-            # Execute the synchronous pipeline in a separate thread so we don't
-            # block the asyncio event loop or other workers.
-            await anyio.to_thread.run_sync(
-                orchestrator.process_pr_pipeline, pr_id, repo_id, project
-            )
+            # Execute the orchestrated pipeline directly (now fully async)
+            await orchestrator.process_pr_pipeline(pr_id, repo_id, project)
             
             log.info("Worker %d completed processing for PR #%s", worker_id, pr_id)
         except asyncio.CancelledError:

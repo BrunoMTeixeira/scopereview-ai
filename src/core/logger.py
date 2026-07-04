@@ -10,6 +10,11 @@ def setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
+    
+    # Silence noisy third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -18,7 +18,8 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log,
 )
-import requests
+import httpx
+import asyncio
 
 from .logger import get_logger
 
@@ -45,24 +46,25 @@ def with_retry_on_transient_http_errors(
     Example:
         ```python
         @with_retry_on_transient_http_errors(max_attempts=3)
-        def fetch_data(url: str) -> dict:
-            response = requests.get(url)
-            response.raise_for_status()
-            return response.json()
+        async def fetch_data(url: str) -> dict:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response.json()
         ```
     """
 
     def should_retry_http_error(exception: BaseException) -> bool:
         """Determine if an HTTP error should trigger a retry."""
-        if isinstance(exception, requests.exceptions.Timeout):
+        if isinstance(exception, httpx.TimeoutException):
             log.warning("⏱️  Timeout detected, will retry...")
             return True
 
-        if isinstance(exception, requests.exceptions.ConnectionError):
+        if isinstance(exception, (httpx.ConnectError, httpx.NetworkError)):
             log.warning("🔌 Connection error detected, will retry...")
             return True
 
-        if isinstance(exception, requests.exceptions.HTTPError):
+        if isinstance(exception, httpx.HTTPStatusError):
             status_code = getattr(exception.response, "status_code", None) if exception.response else None
             # Retry on 429 (Rate Limit), 500, 502, 503, 504 (Server Errors)
             if status_code in (429, 500, 502, 503, 504):
@@ -104,9 +106,9 @@ def with_fallback(fallback_value: Any) -> Callable:
 
     def decorator(func: Callable) -> Callable:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             try:
-                return func(*args, **kwargs)
+                return await func(*args, **kwargs)
             except Exception as e:
                 log.error(
                     "❌ All retry attempts exhausted for %s. Returning fallback value. Error: %s",

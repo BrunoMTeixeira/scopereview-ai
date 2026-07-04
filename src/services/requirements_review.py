@@ -34,7 +34,7 @@ class RequirementsReviewService:
             max_completion_tokens if max_completion_tokens is not None else settings.REQUIREMENTS_MAX_COMPLETION_TOKENS
         )
 
-    def validate_requirements(
+    async def validate_requirements(
         self,
         pr_info: dict,
         work_items: List[dict],
@@ -68,7 +68,7 @@ class RequirementsReviewService:
             ledger_context=ledger_context,
         )
 
-        raw_json, usage = self._ai.complete(
+        raw_json, usage = await self._ai.complete(
             system_prompt=REQUIREMENTS_SYSTEM_PROMPT,
             user_prompt=prompt,
             max_tokens=self._max_completion_tokens,

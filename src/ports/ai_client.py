@@ -5,7 +5,7 @@ from typing import Optional, Protocol, Tuple, runtime_checkable
 class AIModelClientPort(Protocol):
     """Outbound port: chat completion for code/requirements agents."""
 
-    def complete(
+    async def complete(
         self,
         system_prompt: str,
         user_prompt: str,
