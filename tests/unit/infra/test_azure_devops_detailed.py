@@ -43,12 +43,12 @@ async def test_get_work_items_success(ado_client):
         # 1. Lista de Work Items
         mock_resp_links = MagicMock(spec=httpx.Response)
         mock_resp_links.status_code = 200
-        mock_resp_links.json.return_value = {"value": [{"url": "https://wi/1"}]}
+        mock_resp_links.json.return_value = {"value": [{"url": "https://dev.azure.com/org/_apis/wit/workItems/1"}]}
         
         # 2. Detalhes do Work Item
         mock_resp_wi = MagicMock(spec=httpx.Response)
         mock_resp_wi.status_code = 200
-        mock_resp_wi.json.return_value = {
+        mock_resp_wi.json.return_value = {"value": [{
             "id": 1,
             "fields": {
                 "System.Title": "Story 1",
@@ -57,7 +57,7 @@ async def test_get_work_items_success(ado_client):
                 "Microsoft.VSTS.Common.AcceptanceCriteria": "AC"
             },
             "_links": {"html": {"href": "http://wi/1"}}
-        }
+        }]}
         
         mock_get.side_effect = [mock_resp_links, mock_resp_wi]
         
@@ -158,3 +158,53 @@ async def test_get_commit_head_exception(ado_client):
     with patch.object(ado_client._client, 'get', new_callable=AsyncMock, side_effect=httpx.RequestError("Error")):
         sha = await ado_client.get_commit_head("repo1", 123, "proj1")
         assert sha == ""
+import pytest
+from unittest.mock import MagicMock, patch, AsyncMock
+from src.infra.azure_devops import AzureDevOpsClient
+import httpx
+
+@pytest.mark.anyio
+async def test_get_commit_head_error(ado_client):
+    with patch.object(ado_client._client, 'get', new_callable=AsyncMock) as mock_get:
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 404
+        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError("Not found", request=MagicMock(), response=mock_resp)
+        mock_get.return_value = mock_resp
+        
+        with pytest.raises(httpx.HTTPStatusError):
+            await ado_client.get_commit_head("repo1", 1, "proj1")
+
+@pytest.mark.anyio
+async def test_get_changed_files_file_too_large(ado_client):
+    with patch.object(ado_client._client, 'get', new_callable=AsyncMock) as mock_get, \
+         patch.object(ado_client, 'get_file_content', new_callable=AsyncMock) as mock_download:
+        
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "changes": [
+                {"item": {"path": "/big.py"}, "changeType": "edit"}
+            ]
+        }
+        mock_get.return_value = mock_resp
+        
+        # Mock HEAD request for file size
+        mock_head_resp = MagicMock(spec=httpx.Response)
+        mock_head_resp.headers = {"Content-Length": "10000000"}  # 10MB
+        with patch.object(ado_client._client, 'head', new_callable=AsyncMock) as mock_head:
+            mock_head.return_value = mock_head_resp
+            full, diff, total = await ado_client.get_changed_files("repo1", 1, "proj", "sha", "base")
+            
+            assert "big.py" not in full
+            assert not mock_download.called
+
+@pytest.mark.anyio
+async def test_get_file_content_fails(ado_client):
+    with patch.object(ado_client._client, 'get', new_callable=AsyncMock) as mock_get:
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 500
+        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError("Error", request=MagicMock(), response=mock_resp)
+        mock_get.return_value = mock_resp
+        
+        content = await ado_client.get_file_content("repo1", "proj", "/file.py", "sha")
+        assert content == ""

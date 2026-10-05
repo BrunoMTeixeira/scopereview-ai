@@ -18,25 +18,25 @@ async def pr_worker(worker_id: int, pr_queue: asyncio.Queue) -> None:
     """
     log.info("Worker %d started and waiting for PR tasks.", worker_id)
     while True:
+        pr_id = None
         try:
             pr_id, repo_id, project = await pr_queue.get()
             log.info("Worker %d picked up PR #%s (Project: %s)", worker_id, pr_id, project)
-            
+
             # Dynamically resolve orchestrator from the DI container for each task
             orchestrator = injector.get(PipelineOrchestrator)
-            
+
             # Execute the orchestrated pipeline directly (now fully async)
             await orchestrator.process_pr_pipeline(pr_id, repo_id, project)
-            
+
             log.info("Worker %d completed processing for PR #%s", worker_id, pr_id)
         except asyncio.CancelledError:
             log.info("Worker %d shutting down.", worker_id)
             break
         except Exception as exc:
-            # We don't have PR ID available if the exception happens inside `pr_queue.get()`
-            pr_context = f"PR #{pr_id}" if 'pr_id' in locals() else "unknown PR"
+            pr_context = f"PR #{pr_id}" if pr_id is not None else "unknown PR"
             log.error("Worker %d encountered an error processing %s: %s", worker_id, pr_context, exc, exc_info=True)
         finally:
             # Ensure task_done is called if we picked up an item
-            if 'pr_id' in locals():
+            if pr_id is not None:
                 pr_queue.task_done()

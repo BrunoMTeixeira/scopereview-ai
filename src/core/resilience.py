@@ -31,6 +31,7 @@ def with_retry_on_transient_http_errors(
     multiplier: int = 1,
     min_wait: int = 1,
     max_wait: int = 10,
+    retry_status_codes: tuple = (429, 500, 502, 503, 504),
 ) -> Callable:
     """Decorator to retry HTTP calls on transient errors (5xx, 429, network failures).
 
@@ -67,7 +68,7 @@ def with_retry_on_transient_http_errors(
         if isinstance(exception, httpx.HTTPStatusError):
             status_code = getattr(exception.response, "status_code", None) if exception.response else None
             # Retry on 429 (Rate Limit), 500, 502, 503, 504 (Server Errors)
-            if status_code in (429, 500, 502, 503, 504):
+            if status_code in retry_status_codes:
                 log.warning("⚠️  HTTP %s detected, will retry...", status_code)
                 return True
 

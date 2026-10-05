@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from ..core.logger import get_logger
 from ..core.resilience import with_retry_on_transient_http_errors, with_fallback
 from ..domain.triage import SKIP_EXTENSIONS
+from ..ports.repository_client import PullRequestReaderPort, PullRequestWriterPort
 
 log = get_logger("ADO")
 
@@ -71,11 +72,11 @@ def _generate_numbered_diff(base_lines: List[str], target_lines: List[str], from
     return "".join(numbered_lines)
 
 
-class AzureDevOpsClient:
+class AzureDevOpsClient(PullRequestReaderPort, PullRequestWriterPort):
     """REST adapter for Azure DevOps Services API.
 
-    This client implements the RepositoryClientPort and provides methods to
-    interact with PRs, files, work items, and threads.
+    This client implements the PullRequestReaderPort and PullRequestWriterPort,
+    providing methods to interact with PRs, files, work items, and threads.
     """
 
     def __init__(
@@ -155,7 +156,7 @@ class AzureDevOpsClient:
             f"&versionDescriptor.versionType=commit&api-version=7.1"
         )
         try:
-            async with self._client.stream("GET", url) as resp:
+            async with self._client.stream("GET", url, timeout=30.0) as resp:
                 if resp.status_code == 404:
                     return ""
                 resp.raise_for_status()
@@ -167,17 +168,17 @@ class AzureDevOpsClient:
 
                 await resp.aread()
                 return resp.text
-        except httpx.RequestError as exc:
+        except httpx.HTTPError as exc:
             log.warning("Failed to read file %s at %s: %s", path, commit_sha, exc)
             return ""
 
     async def get_file_diff(self, repo_id: str, project: str, path: str, commit_sha: str) -> str:
         """Downloads the file at the given commit SHA and formats it with line numbers."""
-        texto = await self.get_file_content(repo_id, project, path, commit_sha)
-        if not texto:
+        text = await self.get_file_content(repo_id, project, path, commit_sha)
+        if not text:
             return ""
-        linhas = texto.splitlines()[: self._max_lines]
-        return "\n".join([f"{i + 1:>4} | {l}" for i, l in enumerate(linhas)])
+        lines = text.splitlines()[: self._max_lines]
+        return "\n".join([f"{i + 1:>4} | {l}" for i, l in enumerate(lines)])
 
     async def get_changed_files(
         self,
@@ -187,20 +188,20 @@ class AzureDevOpsClient:
         commit_sha: str,
         base_sha: str = "",
     ) -> Tuple[Dict[str, str], Dict[str, str], int]:
-        """Returns (mapa_full, mapa_diffs, total_eligible)."""
+        """Returns (full_file_map, diff_file_map, total_eligible)."""
         url = (
             f"https://dev.azure.com/{self._organization}/{project}"
             f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/iterations?api-version=7.1"
         )
-        mapa_full: Dict[str, str] = {}
-        mapa_diffs: Dict[str, str] = {}
+        full_file_map: Dict[str, str] = {}
+        diff_file_map: Dict[str, str] = {}
         try:
             resp = await self._client.get(url)
             resp.raise_for_status()
             iterations = resp.json().get("value") or []
             if not iterations:
                 log.warning("PR #%s in project %s has no iterations (empty value[]).", pr_id, project)
-                return {}, {}
+                return {}, {}, 0
 
             iter_id = iterations[-1]["id"]
 
@@ -231,15 +232,15 @@ class AzureDevOpsClient:
                 raw_source = await self.get_file_content(repo_id, project, path, commit_sha)
                 if raw_source:
                     truncated_lines = raw_source.splitlines()[: self._max_lines]
-                    conteudo_full_raw = "\n".join(truncated_lines)
-                    mapa_full[path] = conteudo_full_raw
+                    raw_full_content = "\n".join(truncated_lines)
+                    full_file_map[path] = raw_full_content
                 else:
-                    conteudo_full_raw = ""
+                    raw_full_content = ""
 
                 # Build content WITH line numbers for AI context / diff fallback
-                conteudo_diff_formatted = ""
-                if conteudo_full_raw:
-                    conteudo_diff_formatted = "\n".join(
+                formatted_diff_content = ""
+                if raw_full_content:
+                    formatted_diff_content = "\n".join(
                         [f"{i + 1:>4} | {l}" for i, l in enumerate(truncated_lines)]
                     )
 
@@ -250,70 +251,102 @@ class AzureDevOpsClient:
                     target_lines = [l + "\n" for l in raw_target.splitlines()[: self._max_lines]]
                     diff_text = _generate_numbered_diff(base_lines, target_lines, fromfile=path, tofile=path)
                     if diff_text.strip():
-                        mapa_diffs[path] = diff_text
+                        diff_file_map[path] = diff_text
                     else:
-                        mapa_diffs[path] = conteudo_diff_formatted
+                        diff_file_map[path] = formatted_diff_content
                 else:
-                    mapa_diffs[path] = conteudo_diff_formatted
+                    diff_file_map[path] = formatted_diff_content
 
-            return mapa_full, mapa_diffs, total_eligible
+            return full_file_map, diff_file_map, total_eligible
         except httpx.RequestError as exc:
             log.error("Failed to list changed files: %s", exc)
             return {}, {}, 0
 
     @with_retry_on_transient_http_errors(max_attempts=3)
     @with_fallback(fallback_value=[])
-    async def get_work_items(self, repo_id: str, pr_id: int, project: str) -> List[dict]:
-        """Fetches all work items linked to a Pull Request.
+    async def get_work_items(self, repo_id: str, pr_id: int, project: str, pr_description: str = "") -> List[dict]:
+        """Fetches linked Work Items details.
 
         Args:
             repo_id: The repository identifier.
             pr_id: The Pull Request numeric ID.
             project: The project name.
+            pr_description: The PR description to parse for Work Items.
 
         Returns:
             List[dict]: A list of work item details (id, title, type, AC).
-
-        Note:
-            Returns empty list as fallback if all retries fail (non-critical for PR analysis).
         """
         url_threads = (
             f"https://dev.azure.com/{self._organization}/{project}"
             f"/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/workitems?api-version=7.1"
         )
         wi_list: List[dict] = []
-        try:
-            resp_threads = await self._client.get(url_threads)
-            resp_threads.raise_for_status()
-            refs = resp_threads.json().get("value", [])
+        found_ids = set()
 
-            for ref in refs:
-                wi_url = ref.get("url")
-                if not wi_url:
+        # Smart Polling: Wait for ADO background jobs if '#' is in description, otherwise fallback to lenient regex
+        for attempt in range(3):
+            try:
+                # 1. Check ADO native links
+                resp_threads = await self._client.get(url_threads)
+                if resp_threads.status_code == 200:
+                    refs = resp_threads.json().get("value", [])
+                    for ref in refs:
+                        wi_url = ref.get("url")
+                        if not wi_url:
+                            continue
+                        # The URL contains the ID at the end: .../_apis/wit/workItems/19
+                        match = re.search(r"/workItems/(\d+)", wi_url)
+                        if match:
+                            found_ids.add(match.group(1))
+
+                # If ADO found links natively, we can stop polling
+                if found_ids:
+                    break
+
+                # If ADO didn't find links yet, but the user typed '#' in the description, ADO might be lagging
+                if not found_ids and pr_description and "#" in pr_description and attempt < 2:
+                    log.info("No native Work Items found, but '#' detected in PR %s. Waiting 2s for ADO... (Attempt %d)", pr_id, attempt + 1)
+                    await asyncio.sleep(2.0)
                     continue
 
-                resp_wi = await self._client.get(
-                    f"{wi_url}?$expand=relations&api-version=7.1"
-                )
-                if resp_wi.status_code == 200:
-                    wi_data = resp_wi.json()
-                    fields = wi_data.get("fields", {})
-                    wi_list.append(
-                        {
-                            "id": wi_data.get("id"),
-                            "title": fields.get("System.Title", ""),
-                            "type": fields.get("System.WorkItemType", ""),
-                            "description": _strip_html(fields.get("System.Description", "")),
-                            "acceptance_criteria": _strip_html(
-                                fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
-                            ),
-                            "url": wi_data.get("_links", {}).get("html", {}).get("href", ""),
-                        }
-                    )
-            return wi_list
-        except httpx.RequestError as exc:
-            log.error("Failed to fetch linked Work Items: %s", exc)
+                # Fallback: If we exhausted ADO polling or ADO never linked it natively,
+                # extract any mentioned #ID directly as a safety net.
+                if pr_description:
+                    desc_matches = re.findall(r"#(\d+)", pr_description)
+                    found_ids.update(desc_matches)
+                break
+
+            except httpx.RequestError as exc:
+                log.error("Failed to fetch linked Work Items: %s", exc)
+                if attempt == 2:
+                    return []
+                await asyncio.sleep(1.0)
+
+        if not found_ids:
             return []
+
+        # 3. Fetch all found IDs directly
+        ids_str = ",".join(found_ids)
+        wi_url_direct = f"https://dev.azure.com/{self._organization}/{project}/_apis/wit/workitems?ids={ids_str}&$expand=relations&api-version=7.1"
+
+        resp_wi = await self._client.get(wi_url_direct)
+        if resp_wi.status_code == 200:
+            wi_data_list = resp_wi.json().get("value", [])
+            for wi_data in wi_data_list:
+                fields = wi_data.get("fields", {})
+                wi_list.append(
+                    {
+                        "id": wi_data.get("id"),
+                        "title": fields.get("System.Title", ""),
+                        "type": fields.get("System.WorkItemType", ""),
+                        "description": _strip_html(fields.get("System.Description", "")),
+                        "acceptance_criteria": _strip_html(
+                            fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
+                        ),
+                        "url": wi_data.get("_links", {}).get("html", {}).get("href", ""),
+                    }
+                )
+        return wi_list
 
     async def get_repo_rules(self, repo_id: str, project: str, commit_sha: str) -> str:
         """Fetches .codereview.yml or .requirements.yml from the root."""

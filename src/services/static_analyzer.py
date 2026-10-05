@@ -15,12 +15,17 @@ _COMMON_STDLIB_NAMES = {
 
 _POLYGLOT_PATTERNS = [
     {
+        # code_only=True: strip comments and docstrings before matching — prevents false positives from
+        # lines like `# avoid eval`, `# NO EVAL!`, or docstrings describing rules.
+        # func_call_only=True: strip string literals to avoid flagging mentions inside messages/errors.
         "pattern": r"\b(eval|exec|system|popen|shell_exec)\b\s*\(",
         "type": "security",
         "severity": "critical",
         "title": "Dangerous Function (Dynamic Execution)",
         "desc": "Risk of Remote Code Execution (RCE). Avoid running strings as code.",
         "flags": re.IGNORECASE,
+        "code_only": True,
+        "func_call_only": True,
     },
     {
         "pattern": r"\b(strcpy|strcat|gets|sprintf|vsprintf)\b\s*\(",
@@ -29,22 +34,28 @@ _POLYGLOT_PATTERNS = [
         "title": "Unsafe Memory Function (C/C++)",
         "desc": "Prone to Buffer Overflow. Use safe bounds-checking equivalents (strncpy, snprintf).",
         "flags": re.IGNORECASE,
+        "code_only": True,
+        "func_call_only": True,
     },
     {
+        # code_only=True: `verify=False` in a comment (e.g. `# don't use verify=False`) is NOT a bug.
         "pattern": r"(verify\s*=\s*False|ssl_verify\s*=\s*false|check_hostname\s*=\s*False|TrustAllCerts|ALLOW_ALL_HOSTNAME_VERIFIER)",
         "type": "security",
         "severity": "critical",
         "title": "Disabled SSL/TLS Verification",
         "desc": "Enables Man-in-the-Middle (MitM) attacks by trusting any certificate.",
         "flags": re.IGNORECASE,
+        "code_only": True,
     },
     {
+        # code_only=True: weak algo names in comments/docs (e.g. `# migrated from MD5`) are not bugs.
         "pattern": r"\b(md5|sha1|des|rc4)\b",
         "type": "security",
         "severity": "medium",
         "title": "Weak Cryptographic Algorithm",
         "desc": "Vulnerable to collision or brute-force attacks. Use SHA256 or AES256.",
         "flags": re.IGNORECASE,
+        "code_only": True,
     },
     {
         "pattern": r"catch\s*\([^)]*Exception[^)]*\)\s*\{\s*\}",
@@ -53,14 +64,17 @@ _POLYGLOT_PATTERNS = [
         "title": "Empty Catch Block (Java/JS/C#)",
         "desc": "Generic catch without logic hides failure modes and simplifies corruption.",
         "flags": 0,
+        "code_only": True,
     },
     {
+        # code_only=False: a hardcoded JWT token in a comment is still a credential leak.
         "pattern": r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.",
         "type": "security",
         "severity": "critical",
         "title": "Hardcoded JWT Token Detected",
         "desc": "Embedded authentication token discovered in plaintext code.",
         "flags": 0,
+        "code_only": False,
     },
     {
         "pattern": r"Access-Control-Allow-Origin\s*[:=]\s*['\"]?\*['\"]?",
@@ -69,23 +83,41 @@ _POLYGLOT_PATTERNS = [
         "title": "Wildcard CORS Permitted",
         "desc": "Exposes internal resources to any requesting web domain.",
         "flags": re.IGNORECASE,
+        "code_only": True,
     },
     {
+        # code_only=False: TODO/FIXME live specifically inside comments — never strip them.
         "pattern": r"\b(TODO|FIXME|HACK|XXX)\b",
         "type": "quality",
         "severity": "low",
         "title": "Technical Debt / Temporary Placeholder",
         "desc": "Code contains TODO/FIXME comments that should be addressed before PR merge.",
         "flags": 0,
+        "code_only": False,
     },
 ]
 
 
 class StaticAnalyzer:
-    """Deterministic regex-based checks that catch bugs LLMs consistently miss."""
+    """Deterministic regex-based static analysis engine (Shift-Left Phase 1).
+
+    13 rules organized in 3 categories:
+    - Python-specific (rules 1-6): import analysis, print detection, broad exceptions,
+      DEBUG logging, missing imports (NameError), unreachable code.
+    - SQL / Data (rules 7-9, 11): rowcount checks, PII in logs, LIMIT validation,
+      SQL injection via string concatenation.
+    - Polyglot universal (rules 10, 12-13): hardcoded secrets, method stubs,
+      and language-agnostic security patterns (eval, strcpy, SSL bypass, etc.).
+
+    Design decision: rules are co-located in a single method for auditability.
+    Each rule is self-contained and independent — no shared state between rules.
+    The polyglot patterns (rule 13) use a declarative list (_POLYGLOT_PATTERNS)
+    for easy extension without modifying the analysis loop.
+    """
 
     @staticmethod
     def analyze_file(path: str, content: str) -> List[dict]:
+        """Run all 13 static analysis rules against a single file's diff content."""
         findings = []
         lines = content.splitlines()
         # ── Pre-processing ────────────────────────────────────────────────────
@@ -96,6 +128,17 @@ class StaticAnalyzer:
             if content.lstrip().startswith("-"):
                 return ""
             return content
+
+        line_numbers = []
+        for idx, l in enumerate(lines):
+            if "|" in l:
+                match = re.match(r"^[+\-\s]*(\d+)\s*\|", l)
+                if match:
+                    line_numbers.append(int(match.group(1)))
+                else:
+                    line_numbers.append(idx + 1)
+            else:
+                line_numbers.append(idx + 1)
 
         raw_lines = [_extract_and_neutralize(l) for l in lines]
         raw_code = "\n".join(raw_lines)
@@ -113,7 +156,7 @@ class StaticAnalyzer:
                     findings.append(
                         StaticAnalyzer._build_finding(
                             path,
-                            i + 1,
+                            line_numbers[i],
                             "quality",
                             "low",
                             f"Unused import: {name}",
@@ -131,7 +174,7 @@ class StaticAnalyzer:
                         findings.append(
                             StaticAnalyzer._build_finding(
                                 path,
-                                i + 1,
+                                line_numbers[i],
                                 "quality",
                                 "low",
                                 f"Unused import: {name}",
@@ -146,7 +189,7 @@ class StaticAnalyzer:
                 findings.append(
                     StaticAnalyzer._build_finding(
                         path,
-                        i + 1,
+                        line_numbers[i],
                         "quality",
                         "medium",
                         "print() used instead of logging",
@@ -162,7 +205,7 @@ class StaticAnalyzer:
                 findings.append(
                     StaticAnalyzer._build_finding(
                         path,
-                        i + 1,
+                        line_numbers[i],
                         "quality",
                         "medium",
                         "Broad exception handler",
@@ -177,7 +220,7 @@ class StaticAnalyzer:
                 findings.append(
                     StaticAnalyzer._build_finding(
                         path,
-                        i + 1,
+                        line_numbers[i],
                         "quality",
                         "medium",
                         "DEBUG logging level in production",
@@ -188,19 +231,28 @@ class StaticAnalyzer:
 
         # ── 5. Missing imports (NameError) ────────────────────────────────────
         for name, module in _COMMON_STDLIB_NAMES.items():
-            if re.search(r"\b" + re.escape(name) + r"\b", raw_code):
+            # Require a code-usage pattern — Name(...), Name.attr, or Name[...] —
+            # to avoid false positives where the class name appears inside a string
+            # literal, comment, or docstring (e.g. "Anti-Path Traversal" contains
+            # the word "Path" but is not a code reference to pathlib.Path).
+            usage_pattern = r"\b" + re.escape(name) + r"\s*[(.[]"
+            if re.search(usage_pattern, raw_code):
                 if not re.search(r"import\s+.*\b" + re.escape(name) + r"\b", raw_code):
                     for i, raw_l in enumerate(raw_lines):
-                        if re.search(r"\b" + re.escape(name) + r"\b", raw_l):
+                        # Skip comment-only lines and empty/deleted lines
+                        stripped = re.sub(r"^[+\-]+", "", raw_l.strip()).strip()
+                        if stripped.startswith("#") or not stripped:
+                            continue
+                        if re.search(usage_pattern, raw_l):
                             findings.append(
                                 StaticAnalyzer._build_finding(
                                     path,
-                                    i + 1,
+                                    line_numbers[i],
                                     "bug",
                                     "high",
                                     f"NameError: `{name}` used but never imported",
-                                    f"`{name}` is used but not imported.",
-                                    [raw_l.strip()],
+                                    f"`{name}` is used but not imported. Add: from {module} import {name}",
+                                    [stripped],
                                 )
                             )
                             break
@@ -213,7 +265,7 @@ class StaticAnalyzer:
                 findings.append(
                     StaticAnalyzer._build_finding(
                         path,
-                        i + 2,
+                        line_numbers[i + 1] if i + 1 < len(line_numbers) else line_numbers[i] + 1,
                         "bug",
                         "medium",
                         "Unreachable code after `pass`",
@@ -230,7 +282,7 @@ class StaticAnalyzer:
                     findings.append(
                         StaticAnalyzer._build_finding(
                             path,
-                            i + 1,
+                            line_numbers[i],
                             "quality",
                             "medium",
                             "Missing rowcount check after UPDATE/DELETE",
@@ -249,7 +301,7 @@ class StaticAnalyzer:
                 findings.append(
                     StaticAnalyzer._build_finding(
                         path,
-                        i + 1,
+                        line_numbers[i],
                         "security",
                         "medium",
                         "Possible PII exposed in logs",
@@ -266,7 +318,7 @@ class StaticAnalyzer:
                     findings.append(
                         StaticAnalyzer._build_finding(
                             path,
-                            i + 1,
+                            line_numbers[i],
                             "security",
                             "medium",
                             "Unvalidated LIMIT parameter in SQL query",
@@ -287,7 +339,7 @@ class StaticAnalyzer:
                     findings.append(
                         StaticAnalyzer._build_finding(
                             path,
-                            i + 1,
+                            line_numbers[i],
                             "security",
                             "critical",
                             "Hardcoded secret detected",
@@ -298,28 +350,44 @@ class StaticAnalyzer:
 
         # ── 11. SQL Injection Risk ────────────────────────────────────────────
         for i, raw_l in enumerate(raw_lines):
-            # Detects string formatting/interpolation inside cursor.execute calls
-            has_exec_concat = re.search(r'cursor\.execute\s*\(.*(f["\']|%|\.format\()', raw_l, re.I)
+            # Path A: cursor.execute() called with an f-string or .format() — UNSAFE.
+            # NOTE: `%` is intentionally excluded here. `%s` inside a SQL string is
+            # a DB-API parameterized placeholder (SAFE). Only `f"..."` and `.format()`
+            # construct the query via string interpolation and are truly dangerous.
+            # The old-style `cursor.execute("query" % var)` format operator is caught
+            # separately below (Path C).
+            has_exec_concat = re.search(r'cursor\.execute\s*\(.*(f["\']|\.format\()', raw_l, re.I)
 
-            # Detects manual string concatenation of common SQL keywords
+            # Path B: a SQL query variable built via string concatenation, e.g.:
+            #   sql = "SELECT * FROM " + table_name
+            #   cursor.execute(sql)
             has_var_concat = False
             clean_l = re.sub(r"^[+\-]+", "", raw_l.strip()).strip()
-            if any(k in clean_l.upper() for k in ("SELECT", "UPDATE", "DELETE", "INSERT")):
-                if "+" in clean_l and ('"' in clean_l or "'" in clean_l):
-                    # Likely a dynamically concatenated query variable
-                    if re.search(r"\b(sql|query|cmd|command)\b\s*=", clean_l, re.I):
-                        has_var_concat = True
+            # Skip comment lines entirely
+            if not clean_l.startswith("#") and not clean_l.startswith("//"):
+                if any(k in clean_l.upper() for k in ("SELECT", "UPDATE", "DELETE", "INSERT")):
+                    if "+" in clean_l and ('"' in clean_l or "'" in clean_l):
+                        # Only flag if there's an explicit SQL variable being assembled
+                        if re.search(r"\b(sql|query|cmd|command)\b\s*[+]?=", clean_l, re.I):
+                            has_var_concat = True
 
-            if has_exec_concat or has_var_concat:
+            # Path C: old-style Python `%` format operator applied to a SQL string
+            # e.g. cursor.execute("SELECT ... WHERE id=%s" % user_id)  ← UNSAFE
+            # Distinguished from safe %s placeholders because the % is OUTSIDE the string.
+            has_format_op = bool(
+                re.search(r'cursor\.execute\s*\(\s*(?:f?["\'][^"\']*["\'])\s*%\s*\w', raw_l, re.I)
+            )
+
+            if has_exec_concat or has_var_concat or has_format_op:
                 findings.append(
                     StaticAnalyzer._build_finding(
                         path,
-                        i + 1,
+                        line_numbers[i],
                         "security",
                         "critical",
                         "Possible SQL Injection",
                         "Concatenating variables in SQL queries allows malicious code injection. Use parameterized queries.",
-                        [raw_l.strip()],
+                        [clean_l or raw_l.strip()],
                     )
                 )
 
@@ -336,7 +404,7 @@ class StaticAnalyzer:
                 findings.append(
                     StaticAnalyzer._build_finding(
                         path,
-                        i + 1,
+                        line_numbers[i],
                         "quality",
                         "medium",
                         "Empty Method Stub detected",
@@ -346,14 +414,68 @@ class StaticAnalyzer:
                 )
 
         # ── 13. Polyglot Universal Engine (Multi-language) ────────────────────
+        in_multiline_docstring = None
+        in_multiline_c_comment = False
+
         for i, raw_l in enumerate(raw_lines):
             clean = re.sub(r"^[+\-]+", "", raw_l.strip()).strip()
+
+            clean_code_only = clean
+
+            # Handle multiline C comments /* ... */
+            if in_multiline_c_comment:
+                if "*/" in clean_code_only:
+                    clean_code_only = clean_code_only.split("*/", 1)[-1].strip()
+                    in_multiline_c_comment = False
+                else:
+                    clean_code_only = ""
+            elif "/*" in clean_code_only:
+                if "*/" in clean_code_only:
+                    clean_code_only = re.sub(r"/\*.*?\*/", "", clean_code_only).strip()
+                else:
+                    clean_code_only = clean_code_only.split("/*", 1)[0].strip()
+                    in_multiline_c_comment = True
+
+            # Handle docstrings (""" or ''')
+            if in_multiline_docstring:
+                if in_multiline_docstring in clean_code_only:
+                    clean_code_only = clean_code_only.split(in_multiline_docstring, 1)[-1].strip()
+                    in_multiline_docstring = None
+                else:
+                    clean_code_only = ""
+            else:
+                # Strip single-line triple quoted docstrings
+                clean_code_only = re.sub(r'""".*?"""', "", clean_code_only)
+                clean_code_only = re.sub(r"'''.*?'''", "", clean_code_only)
+                if '"""' in clean_code_only:
+                    clean_code_only = clean_code_only.split('"""', 1)[0].strip()
+                    in_multiline_docstring = '"""'
+                elif "'''" in clean_code_only:
+                    clean_code_only = clean_code_only.split("'''", 1)[0].strip()
+                    in_multiline_docstring = "'''"
+
+            # Strip inline comments: Python (#), JS/Java/C# (//)
+            clean_code_only = re.sub(r"\s*#.*$", "", clean_code_only).strip()
+            clean_code_only = re.sub(r"\s*//.*$", "", clean_code_only).strip()
+
             for rule in _POLYGLOT_PATTERNS:
-                if re.search(rule["pattern"], clean, rule["flags"]):
+                # code_only=True  → match only against executable code (comments/docstrings stripped)
+                # code_only=False → match against the full line (comments preserved)
+                target = clean_code_only if rule.get("code_only", False) else clean
+                if not target:
+                    continue
+
+                if rule.get("func_call_only"):
+                    target_for_match = re.sub(r'"(?:\\.|[^"\\])*"', '""', target)
+                    target_for_match = re.sub(r"'(?:\\.|[^'\\])*'", "''", target_for_match)
+                else:
+                    target_for_match = target
+
+                if re.search(rule["pattern"], target_for_match, rule["flags"]):
                     findings.append(
                         StaticAnalyzer._build_finding(
                             path,
-                            i + 1,
+                            line_numbers[i],
                             rule["type"],
                             rule["severity"],
                             rule["title"],

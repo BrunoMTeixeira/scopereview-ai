@@ -1,10 +1,11 @@
 import os
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException, RequestValidationError
 
-from .core.config import settings, validate_settings
+from .core.config import settings
 from .core.logger import setup_logging, get_logger
 from .bootstrap import bootstrap_dependencies
 from .api.webhooks import router as webhooks_router
@@ -18,7 +19,7 @@ _log = get_logger("Main")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Manage FastAPI application lifecycle: startup and shutdown.
 
@@ -47,11 +48,6 @@ async def lifespan(app: FastAPI):
 
     try:
         # Step 1: Validate configuration
-        allow_http = os.environ.get("SCOPE_REVIEW_ALLOW_HTTP_AI", "").lower() in ("1", "true", "yes")
-        _log.debug("HTTP AI endpoints allowed: %s", allow_http)
-
-        validate_settings(require_https_endpoints=not allow_http)
-        _log.info("✓ Configuration validated")
 
         # Step 2: Bootstrap dependencies
         bootstrap_dependencies()
@@ -81,7 +77,7 @@ async def lifespan(app: FastAPI):
     _log.info("=" * 80)
     _log.info("ScopeReview AI — Application Shutdown")
     _log.info("=" * 80)
-    
+
     # Gracefully shutdown workers
     workers = getattr(app.state, "workers", [])
     if workers:

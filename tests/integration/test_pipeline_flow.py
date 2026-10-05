@@ -3,14 +3,14 @@ from unittest.mock import Mock, MagicMock, patch
 from typing import Dict, Any, List
 
 from src.services.orchestrator import PipelineOrchestrator
-from src.ports.repository_client import RepositoryClientPort
+from src.ports.repository_client import PullRequestReaderPort, PullRequestWriterPort
 from src.ports.ai_client import AIModelClientPort
 from src.ports.dedup import PipelineDedupPort
 from src.services.code_review import CodeReviewService
 from src.services.requirements_review import RequirementsReviewService
 
 
-class MockAzureDevOpsClient(RepositoryClientPort):
+class MockAzureDevOpsClient(PullRequestReaderPort, PullRequestWriterPort):
     """Mock ADO client for testing."""
 
     def __init__(self):
@@ -48,7 +48,7 @@ class MockAzureDevOpsClient(RepositoryClientPort):
             "comment": comment_text
         })
 
-    async def get_work_items(self, repo_id: str, pr_id: int, project: str) -> List[Dict[str, Any]]:
+    async def get_work_items(self, repo_id: str, pr_id: int, project: str, pr_description: str = "") -> List[Dict[str, Any]]:
         return []
 
     async def get_repo_rules(self, repo_id: str, project: str, commit_sha: str) -> str:
@@ -118,7 +118,8 @@ class TestPipelineOrchestration:
             self, mock_ado, code_review_service, requirements_review_service, mock_dedup
     ):
         return PipelineOrchestrator(
-            ado=mock_ado,
+            pr_reader=mock_ado,
+            pr_writer=mock_ado,
             code_review=code_review_service,
             requirements_review=requirements_review_service,
             dedup=mock_dedup,

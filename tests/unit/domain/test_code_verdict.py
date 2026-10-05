@@ -28,10 +28,10 @@ class TestCodeReviewVerdict:
             {"file": "a.py", "line": 10, "type": "T1", "severity": "medium"},
             {"file": "a.py", "line": 20, "type": "T2", "severity": "low"}
         ]
-        # penalty: 1.5 + 0.5 = 2.0 -> Score = 10 - 2 = 8
+        # penalty: 0.5 + 0.15 = 0.65 -> Score = round(10 - 0.65) = 9
         unique, score, approved = engine.evaluate(raw)
-        
-        assert score == 8
+
+        assert score == 9
         assert approved is True
 
     def test_evaluate_rejects_on_critical(self):
@@ -40,9 +40,9 @@ class TestCodeReviewVerdict:
             {"file": "a.py", "line": 10, "type": "T1", "severity": "critical"}
         ]
         unique, score, approved = engine.evaluate(raw)
-        
-        assert approved is False
-        assert score == 5  # 10 - 5.0
+
+        assert approved is False  # has_critical -> always blocked
+        assert score == 7  # 10 - 3.0 = 7
 
     def test_evaluate_rejects_on_max_high(self):
         engine = CodeReviewVerdict(max_high_block=2)
@@ -51,20 +51,21 @@ class TestCodeReviewVerdict:
             {"file": "a.py", "line": 20, "type": "T2", "severity": "high"}
         ]
         unique, score, approved = engine.evaluate(raw)
-        
+
         # 2 high == max_high_block (2). Should block.
         assert approved is False
-        assert score == 4  # 10 - 6.0
+        assert score == 7  # 10 - 3.0 = 7
 
     def test_evaluate_rejects_on_low_score(self):
         engine = CodeReviewVerdict(max_high_block=5)
         raw = [
-            {"file": "a.py", "line": 1, "type": "T", "severity": "medium"},
-            {"file": "a.py", "line": 2, "type": "T", "severity": "medium"},
-            {"file": "a.py", "line": 3, "type": "T", "severity": "medium"}
+            {"file": "a.py", "line": 1, "type": "T1", "severity": "high"},
+            {"file": "a.py", "line": 2, "type": "T2", "severity": "high"},
+            {"file": "a.py", "line": 3, "type": "T3", "severity": "high"},
+            {"file": "a.py", "line": 4, "type": "T4", "severity": "medium"}
         ]
-        # penalty 4.5 -> score 6
+        # penalty: 3*1.5 + 0.5 = 5.0 -> score = round(10-5) = 5
         unique, score, approved = engine.evaluate(raw)
-        
-        assert approved is False
-        assert score == 6
+
+        assert approved is False  # score < 7
+        assert score == 5

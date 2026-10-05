@@ -2,7 +2,7 @@ import logging
 import sys
 
 
-def setup_logging():
+def setup_logging() -> None:
     """Configure base logger format for the entire application."""
     logging.basicConfig(
         level=logging.INFO,
@@ -10,7 +10,7 @@ def setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
-    
+
     # Silence noisy third-party loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

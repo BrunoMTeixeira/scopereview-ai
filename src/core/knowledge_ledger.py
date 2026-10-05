@@ -24,37 +24,37 @@ _FINDING_TO_NFR: List[Dict] = [
     {
         "pattern": re.compile(r"unused import", re.I),
         "nfr_id": "NF-01",
-        "nfr_label": "Sem Imports Não Utilizados",
+        "nfr_label": "No Unused Imports",
         "status": "PARTIAL",
     },
     {
         "pattern": re.compile(r"print\(\)|print.+instead of log", re.I),
         "nfr_id": "NF-02",
-        "nfr_label": "Logging Consistente",
+        "nfr_label": "Consistent Logging",
         "status": "PARTIAL",
     },
     {
         "pattern": re.compile(r"DEBUG.+log|log.+DEBUG", re.I),
         "nfr_id": "NF-03",
-        "nfr_label": "Nível de Logging Apropriado",
+        "nfr_label": "Appropriate Logging Level",
         "status": "PARTIAL",
     },
     {
         "pattern": re.compile(r"broad.+except|except.+Exception", re.I),
         "nfr_id": "NF-05",
-        "nfr_label": "Tratamento de Exceções Específico",
+        "nfr_label": "Specific Exception Handling",
         "status": "PARTIAL",
     },
     {
         "pattern": re.compile(r"unreachable|dead code", re.I),
         "nfr_id": "NF-06",
-        "nfr_label": "Sem Código Unreachable",
+        "nfr_label": "No Unreachable Code",
         "status": "PARTIAL",
     },
     {
         "pattern": re.compile(r"hardcoded.+secret|secret.+hardcod", re.I),
         "nfr_id": "SEC-01",
-        "nfr_label": "Sem Segredos Hardcoded",
+        "nfr_label": "No Hardcoded Secrets",
         "status": "PARTIAL",
     },
     {

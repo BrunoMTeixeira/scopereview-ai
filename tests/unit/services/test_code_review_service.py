@@ -68,11 +68,11 @@ async def test_code_review_snippet_enrichment(mock_ai):
     ))
     
     # A diff file map that contains diff markers
-    mapa_diffs = {
+    diff_file_map = {
         "lazy.py": "@@ -1,3 +1,3 @@\n 1| def func():\n+2|     return None\n 3| "
     }
     
-    result, _ = await service.analyze_pr_code(mapa_diffs)
+    result, _ = await service.analyze_pr_code(diff_file_map)
     
     # The snippet should have been replaced with the actual code from line 2
     finding = result["findings"][0]
@@ -89,8 +89,8 @@ async def test_code_review_malformed_json_fallback(mock_ai):
         {"total_tokens": 10, "prompt_tokens": 10, "completion_tokens": 0}
     ))
     
-    mapa_diffs = {"broken.py": "def test(): pass"}
-    result, metrics = await service.analyze_pr_code(mapa_diffs)
+    diff_file_map = {"broken.py": "def test(): pass"}
+    result, metrics = await service.analyze_pr_code(diff_file_map)
     
     # Should not crash. Should return empty findings
     assert len(result["findings"]) == 0
@@ -104,8 +104,8 @@ async def test_code_review_empty_results():
     mock_ai_empty.complete = AsyncMock(return_value=(None, {}))
     
     service = CodeReviewService(mock_ai_empty, MagicMock(), max_high_block=2, max_token_budget=1000)
-    mapa_diffs = {"empty.py": "def fine(): pass"}
-    result, metrics = await service.analyze_pr_code(mapa_diffs)
+    diff_file_map = {"empty.py": "def fine(): pass"}
+    result, metrics = await service.analyze_pr_code(diff_file_map)
     
     assert len(result["findings"]) == 0
     assert len(result["findings"]) == 0
@@ -121,11 +121,11 @@ async def test_code_review_with_full_map_and_work_items(mock_ai):
         {"total_tokens": 150, "prompt_tokens": 100, "completion_tokens": 50}
     ))
     
-    mapa_diffs = {"app.py": "@@ -1,5 +1,5 @@\n+def foo(): return 1\n"}
-    mapa_full = {"app.py": "def foo():\n    return 1\ndef bar():\n    return 2"}
+    diff_file_map = {"app.py": "@@ -1,5 +1,5 @@\n+def foo(): return 1\n"}
+    full_file_map = {"app.py": "def foo():\n    return 1\ndef bar():\n    return 2"}
     work_items = [{"id": 1, "title": "Feature X"}]
     
-    result, metrics = await service.analyze_pr_code(mapa_diffs, mapa_full=mapa_full, work_items=work_items)
+    result, metrics = await service.analyze_pr_code(diff_file_map, full_file_map=full_file_map, work_items=work_items)
     
     # Must have used the LLM and the skeletonizer
     assert len(result["findings"]) == 1

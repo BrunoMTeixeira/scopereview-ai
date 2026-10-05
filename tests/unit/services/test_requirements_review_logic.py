@@ -16,8 +16,8 @@ async def test_validate_requirements_no_json(rr_service):
     result, metrics = await rr_service.validate_requirements(
         pr_info={"title": "T"},
         work_items=[],
-        regras_repo="",
-        mapa_ficheiros={"f.py": "code"}
+        repo_rules="",
+        file_map={"f.py": "code"}
     )
     
     assert result is None
@@ -39,8 +39,8 @@ async def test_validate_requirements_success(rr_service):
     result, metrics = await rr_service.validate_requirements(
         pr_info={"title": "T", "description": "D", "author": "A"},
         work_items=[{"id": 1, "title": "Requirement 1", "acceptance_criteria": "AC"}],
-        regras_repo="Rules",
-        mapa_ficheiros={"f.py": "code"},
+        repo_rules="Rules",
+        file_map={"f.py": "code"},
         injected_findings=[]
     )
     
@@ -52,11 +52,11 @@ async def test_validate_requirements_parsing_exception(rr_service):
     """Testa o tratamento de erros genricos no parsing do JSON."""
     rr_service._ai.complete.return_value = ('{"invalid": "json"}', {"total_tokens": 100, "prompt_tokens": 100, "completion_tokens": 0})
     
-    with patch("src.services.requirements_review.parse_llm_json_object", side_effect=RuntimeError("Fatal Error")):
+    with patch("src.services.requirements_review.parse_llm_json_object", side_effect=ValueError("Fatal Error")):
         result, metrics = await rr_service.validate_requirements(
             pr_info={"title": "T"},
             work_items=[{"id": 1, "title": "R"}],
-            regras_repo="",
-            mapa_ficheiros={"f.py": "c"}
+            repo_rules="",
+            file_map={"f.py": "c"}
         )
         assert result is None

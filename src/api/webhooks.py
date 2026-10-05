@@ -106,9 +106,9 @@ async def webhook_orchestrate(
     Validated via Pydantic model for strict schema enforcement.
     Uses asyncio.Queue (via worker pool) to mitigate HTTP timeouts and enforce concurrency limits.
     """
-    evento = payload.eventType
-    if evento not in ("git.pullrequest.created", "git.pullrequest.updated"):
-        return JSONResponse({"status": "ignored", "reason": f"Event type '{evento}' not supported"})
+    event = payload.eventType
+    if event not in ("git.pullrequest.created", "git.pullrequest.updated"):
+        return JSONResponse({"status": "ignored", "reason": f"Event type '{event}' not supported"})
 
     pr = payload.resource
     pr_id = pr.pullRequestId
@@ -131,6 +131,6 @@ async def webhook_orchestrate(
         content={
             "status": "accepted",
             "message": f"Orchestrator Pipeline started for PR {pr_id}",
-            "details": {"pr_id": pr_id, "project": project, "event": evento},
+            "details": {"pr_id": pr_id, "project": project, "event": event},
         },
     )

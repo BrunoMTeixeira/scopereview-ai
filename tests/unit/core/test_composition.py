@@ -10,7 +10,7 @@ from src.composition import (
 )
 from src.services.orchestrator import PipelineOrchestrator
 from src.ports.ai_client import AIModelClientPort
-from src.ports.repository_client import RepositoryClientPort
+from src.ports.repository_client import PullRequestReaderPort, PullRequestWriterPort
 
 
 class TestSimpleDependencyInjector:
@@ -141,7 +141,7 @@ class TestCompositionBootstrap:
     def test_get_pipeline_orchestrator_returns_registered_instance(self):
         """Test that get_pipeline_orchestrator returns the registered instance."""
         # Arrange
-        mock_ado = Mock(spec=RepositoryClientPort)
+        mock_ado = Mock(spec=PullRequestReaderPort); mock_writer = Mock(spec=PullRequestWriterPort)
         mock_ai = Mock(spec=AIModelClientPort)
         mock_orchestrator = Mock(spec=PipelineOrchestrator)
 
@@ -207,3 +207,12 @@ class TestBootstrapFunction:
         # Assert
         from src.core.di import injector
         assert injector.get(PipelineOrchestrator) is not None
+    def test_register_service_exception_handling(self):
+        from src.composition import register_service
+        from src.core.di import injector
+        from unittest.mock import patch
+        import pytest
+        
+        with patch.object(injector, 'register', side_effect=TypeError("Invalid type")):
+            with pytest.raises(TypeError):
+                register_service(str, "test")

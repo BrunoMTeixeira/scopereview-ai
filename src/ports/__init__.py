@@ -7,8 +7,8 @@ implementations, the core logic remains decoupled from external infrastructure
 such as APIs, databases, or specific LLM providers.
 """
 
-from .repository_client import RepositoryClientPort
+from .repository_client import PullRequestReaderPort, PullRequestWriterPort
 from .ai_client import AIModelClientPort
 from .dedup import PipelineDedupPort
 
-__all__ = ["AIModelClientPort", "RepositoryClientPort", "PipelineDedupPort"]
+__all__ = ["AIModelClientPort", "PullRequestReaderPort", "PullRequestWriterPort", "PipelineDedupPort"]

@@ -4,9 +4,9 @@ from .core.pipeline_dedup import InMemoryPipelineDedup
 from .infra.redis_dedup import RedisPipelineDedup
 from .infra.azure_ai import AzureOpenAIClient
 from .infra.azure_devops import AzureDevOpsClient
-from .ports.dedup import PipelineDedupPort
 from .ports.ai_client import AIModelClientPort
-from .ports.repository_client import RepositoryClientPort
+from .ports.dedup import PipelineDedupPort
+from .ports.repository_client import PullRequestReaderPort, PullRequestWriterPort
 from .services.code_review import CodeReviewService
 from .services.requirements_review import RequirementsReviewService
 from .services.static_analyzer import StaticAnalyzer
@@ -55,7 +55,8 @@ def bootstrap_dependencies() -> None:
             endpoint=settings.AZURE_ENDPOINT_CR,
             api_key=settings.AZURE_API_KEY_CR,
             model_name=settings.AZURE_MODEL_CR,
-            max_retries=settings.MAX_TENTATIVAS,
+            max_retries=settings.MAX_RETRIES,
+            reasoning_effort=settings.REASONING_EFFORT,
         )
         _log.info(
             "Initialized Code Review AI client (%s)",
@@ -66,7 +67,7 @@ def bootstrap_dependencies() -> None:
             endpoint=settings.AZURE_ENDPOINT_REQ,
             api_key=settings.AZURE_API_KEY_REQ,
             model_name=settings.AZURE_MODEL_REQ,
-            max_retries=settings.MAX_TENTATIVAS,
+            max_retries=settings.MAX_RETRIES,
         )
         _log.info(
             "Initialized Requirements AI client (%s)",
@@ -127,7 +128,8 @@ def bootstrap_dependencies() -> None:
         # ===== Application Orchestrator =====
 
         orchestrator = PipelineOrchestrator(
-            ado=ado_client,
+            pr_reader=ado_client,
+            pr_writer=ado_client,
             code_review=code_review_service,
             requirements_review=requirements_review_service,
             dedup=dedup,
@@ -139,7 +141,8 @@ def bootstrap_dependencies() -> None:
         # ===== Register in DI Container =====
 
         register_service(AIModelClientPort, code_review_ai)
-        register_service(RepositoryClientPort, ado_client)
+        register_service(PullRequestReaderPort, ado_client)
+        register_service(PullRequestWriterPort, ado_client)
         register_service(PipelineDedupPort, dedup)
         register_service(StaticAnalyzer, static_analyzer)
         register_service(CodeReviewService, code_review_service)

@@ -35,8 +35,8 @@ async def test_validate_requirements_domain_override(rr_service):
     result, _ = await rr_service.validate_requirements(
         pr_info={"title": "T"},
         work_items=[{"id": 1, "title": "R"}],
-        regras_repo="",
-        mapa_ficheiros={"f.py": "c"}
+        repo_rules="",
+        file_map={"f.py": "c"}
     )
     
     assert result["overall_verdict"] == "NEEDS_WORK"
@@ -63,8 +63,8 @@ async def test_validate_requirements_markdown_stripping(rr_service):
     result, _ = await rr_service.validate_requirements(
         pr_info={"title": "T"},
         work_items=[{"id": 1, "title": "R"}],
-        regras_repo="",
-        mapa_ficheiros={"f.py": "c"}
+        repo_rules="",
+        file_map={"f.py": "c"}
     )
     
     assert result is not None

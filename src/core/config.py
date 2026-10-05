@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     AZURE_ENDPOINT_CR: str = Field(default="", description="Azure OpenAI endpoint for Code Review agent")
     AZURE_API_KEY_CR: str = Field(default="", description="Azure OpenAI API key for Code Review agent")
     AZURE_MODEL_CR: str = Field(default="o4-mini", description="Model deployment name for Code Review")
+    REASONING_EFFORT: str = Field(default="medium", description="Reasoning effort for O-series models: low, medium, or high")
+
+    @field_validator("REASONING_EFFORT")
+    @classmethod
+    def validate_reasoning_effort(cls, v: str) -> str:
+        """Ensure reasoning_effort is a valid O-series value."""
+        allowed = {"low", "medium", "high"}
+        if v.lower() not in allowed:
+            raise ValueError(f"REASONING_EFFORT must be one of {allowed}, got '{v}'")
+        return v.lower()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Azure AI Configuration (Requirements Agent)
@@ -64,8 +74,10 @@ class Settings(BaseSettings):
     MAX_WORKERS: int = Field(default=3, ge=1, le=20, description="Max concurrent background workers for PR processing")
     MAX_FILES: int = Field(default=5, ge=1, le=50, description="Maximum files to analyze per PR")
     MAX_LINES: int = Field(default=2000, ge=50, le=2000, description="Maximum lines to fetch per file")
-    MAX_TENTATIVAS: int = Field(default=3, ge=1, le=10, description="Max retry attempts for HTTP calls")
+    MAX_RETRIES: int = Field(default=3, ge=1, le=10, description="Max retry attempts for HTTP calls")
     MAX_HIGH_BLOCK: int = Field(default=3, ge=0, le=10, description="Max HIGH severity issues before blocking PR")
+    MAX_BLOCK_CONCURRENCY: int = Field(default=5, ge=1, le=10, description="Max concurrent blocks for AI analysis")
+    MIN_APPROVAL_SCORE: int = Field(default=7, ge=1, le=10, description="Minimum code review score to approve PR")
     MAX_TOKEN_BUDGET: int = Field(default=50000, ge=1000, description="Max cumulative LLM tokens per PR analysis")
     REQUIREMENTS_MAX_COMPLETION_TOKENS: int = Field(
         default=24000, ge=1000, description="Max completion tokens for Requirements agent"
@@ -118,13 +130,6 @@ class Settings(BaseSettings):
         return v
 
     @property
-    def ado_auth_header(self) -> str:
-        """Base64 ADO authentication header (legacy helper; prefer AzureDevOpsClient)."""
-        if not self.ADO_PAT:
-            return ""
-        return f"Basic {base64.b64encode(f':{self.ADO_PAT}'.encode()).decode()}"
-
-    @property
     def is_production(self) -> bool:
         """Check if running in production mode."""
         return self.ENVIRONMENT.lower() == "production"
@@ -168,13 +173,3 @@ def load_settings() -> Settings:
 
 # Singleton instance
 settings = load_settings()
-
-
-def validate_settings(*, require_https_endpoints: bool = True) -> None:
-    """
-    Legacy validation function for backward compatibility.
-
-    The validation is now handled by Pydantic validators in the Settings class.
-    This function is kept for compatibility with existing code but is now a no-op.
-    """
-    pass  # Validation now happens in Settings class via Pydantic validators

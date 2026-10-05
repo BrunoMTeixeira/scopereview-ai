@@ -5,12 +5,13 @@ import asyncio
 from typing import Dict, List, Optional
 
 from ..core.logger import get_logger
-from ..core.llm_json import parse_llm_json_object  # ✅ ADICIONAR ESTE IMPORT
+from ..core.llm_json import parse_llm_json_object  # âœ… ADICIONAR ESTE IMPORT
 from ..ports.ai_client import AIModelClientPort
-from ..core.ast_skeleton import skeletonize_file  # 🆕 IMPORT SKELETONIZER
+from ..core.ast_skeleton import skeletonize_file  # ðŸ†• IMPORT SKELETONIZER
 from .static_analyzer import StaticAnalyzer
 from ..templates.prompts import build_code_review_prompt, CODE_REVIEW_SYSTEM_PROMPT
 from ..domain.code_verdict import CodeReviewVerdict
+from ..core.config import settings
 
 log = get_logger("CodeReview")
 
@@ -35,7 +36,7 @@ class CodeReviewService:
         self._static_analyzer = static_analyzer
         self._max_high_block = max_high_block
         self._max_token_budget = max_token_budget
-        self._concurrency_limit = asyncio.Semaphore(5) # Limita a 5 blocos simultâneos para evitar rate limits
+        self._concurrency_limit = asyncio.Semaphore(settings.MAX_BLOCK_CONCURRENCY)  # Limits to 5 concurrent blocks to avoid rate limits
 
     @staticmethod
     def _build_context_header(content: str) -> str:
@@ -49,23 +50,23 @@ class CodeReviewService:
         return "# FILE CONTEXT (imports & signatures):\n" + "\n".join(context[:30]) + "\n\n" if context else ""
 
     @staticmethod
-    def _dividir_em_blocos(conteudo: str) -> List[str]:
-        padrao = r"\n(?=\s*\d+\s*\|\s*(?:def |class |async def |public |private |protected |static |function ))"
-        fragmentos = re.split(padrao, conteudo)
-        blocos, atual = [], ""
-        for i, frag in enumerate(fragmentos):
-            atual += frag
+    def _split_into_blocks(content: str) -> List[str]:
+        pattern = r"\n(?=\s*\d+\s*\|\s*(?:def |class |async def |public |private |protected |static |function ))"
+        fragments = re.split(pattern, content)
+        blocks, current_block = [], ""
+        for i, frag in enumerate(fragments):
+            current_block += frag
             # Increased threshold from 200 to 400 to minimize API calls while maintaining context.
-            if len(atual.splitlines()) >= 400 or i == len(fragmentos) - 1:
-                if atual.strip():
-                    blocos.append(atual)
-                atual = ""
-        return blocos if blocos else [conteudo]
+            if len(current_block.splitlines()) >= 400 or i == len(fragments) - 1:
+                if current_block.strip():
+                    blocks.append(current_block)
+                current_block = ""
+        return blocks if blocks else [content]
 
-    async def _analisar_bloco(
+    async def _analyze_block(
         self,
-        caminho: str,
-        bloco: str,
+        path: str,
+        block: str,
         work_items: List[dict] = None,
         skeleton: str = None
     ) -> tuple[Optional[dict], dict]:
@@ -75,8 +76,8 @@ class CodeReviewService:
         from the AI model (includes json-repair fallback).
         """
         prompt = build_code_review_prompt(
-            caminho=caminho,
-            bloco=bloco,
+            path=path,
+            block=block,
             work_items=work_items,
             skeleton=skeleton
         )
@@ -95,8 +96,8 @@ class CodeReviewService:
 
     async def analyze_pr_code(
         self,
-        mapa_diffs: Dict[str, str],
-        mapa_full: Dict[str, str] = None,
+        diff_file_map: Dict[str, str],
+        full_file_map: Dict[str, str] = None,
         work_items: List[dict] = None,
     ) -> tuple[Optional[dict], dict]:
         """Performs a comprehensive code review on a set of files.
@@ -105,8 +106,8 @@ class CodeReviewService:
         token budgeting, and result aggregation (deduplication and scoring).
 
         Args:
-            mapa_diffs (Dict[str, str]): A dictionary mapping file paths to their diff content.
-            mapa_full (Dict[str, str]): Optional dictionary mapping paths to FULL content for skeletonization.
+            diff_file_map (Dict[str, str]): A dictionary mapping file paths to their diff content.
+            full_file_map (Dict[str, str]): Optional dictionary mapping paths to FULL content for skeletonization.
             work_items (List[dict]): Optional list of ACs/Work Items for requirements-guided review.
 
         Returns:
@@ -120,33 +121,33 @@ class CodeReviewService:
 
         # Pre-calculate skeletons to share across blocks
         skeletons = {}
-        if mapa_full:
-            for path, content in mapa_full.items():
+        if full_file_map:
+            for path, content in full_file_map.items():
                 skeletons[path] = skeletonize_file(path, content)
 
         # 1. Static Analysis
-        for path, content in mapa_diffs.items():
+        for path, content in diff_file_map.items():
             static_findings = self._static_analyzer.analyze_file(path, content)
             if static_findings:
-                log.info("  [STATIC] '%s' — %d finding(s)", path, len(static_findings))
+                log.info("  [STATIC] '%s' â€” %d finding(s)", path, len(static_findings))
                 raw_results.append({"findings": static_findings, "_source": "static"})
 
         # 2. AI Analysis - Parallel Execution using gather
         tasks = []
-        for path, content in mapa_diffs.items():
-            blocos = self._dividir_em_blocos(content)
+        for path, content in diff_file_map.items():
+            blocks = self._split_into_blocks(content)
             context_header = self._build_context_header(content)
             skeleton_context = skeletons.get(path)
 
-            log.info("Analysing '%s' — %d block(s)", path, len(blocos))
+            log.info("Analysing '%s' â€” %d block(s)", path, len(blocks))
 
-            for b in blocos:
+            for b in blocks:
                 # Local wrapper function to apply semaphore and context mapping
-                async def sem_task(c_path=path, c_bloco=context_header + b, c_skeleton=skeleton_context):
+                async def sem_task(c_path=path, c_block=context_header + b, c_skeleton=skeleton_context):
                     async with self._concurrency_limit:
-                        res, usage = await self._analisar_bloco(
-                            caminho=c_path,
-                            bloco=c_bloco,
+                        res, usage = await self._analyze_block(
+                            path=c_path,
+                            block=c_block,
                             work_items=work_items,
                             skeleton=c_skeleton,
                         )
@@ -160,22 +161,23 @@ class CodeReviewService:
         # Process results
         for path, res, usage in task_results:
             if res:
-                for f in res.get("findings", []):
+                findings_list = res.get("findings") or []
+                for f in findings_list:
                     f["file"] = path
                 raw_results.append(res)
-            
+
             total_tokens += usage.get("total_tokens", 0)
             if total_tokens >= self._max_token_budget:
                 budget_exceeded = True
 
         # 3. Aggregate and evaluate verdict
-        result, metrics = self._normalize_and_aggregate(raw_results, mapa_diffs)
+        result, metrics = self._normalize_and_aggregate(raw_results, diff_file_map)
         metrics["time"] = round(time.time() - start_time, 1)
         metrics["token_budget_exceeded"] = budget_exceeded
-        
+
         return result, metrics
 
-    def _normalize_and_aggregate(self, raw_results: List[dict], mapa_diffs: Dict[str, str]) -> tuple[dict, dict]:
+    def _normalize_and_aggregate(self, raw_results: List[dict], diff_file_map: Dict[str, str]) -> tuple[dict, dict]:
         """Deduplicates findings across multiple files and calculates the verdict.
 
         Delegates business logic to the domain model (CodeReviewVerdict).
@@ -190,18 +192,18 @@ class CodeReviewService:
         for res in raw_results:
             if not res:
                 continue
-            all_f.extend(res.get("findings", []))
-            all_p.extend(res.get("positive_aspects", []))
+            all_f.extend(res.get("findings") or [])
+            all_p.extend(res.get("positive_aspects") or [])
             usage = res.get("_usage", {})
             total_tokens += usage.get("total_tokens", 0)
             total_reasoning += usage.get("reasoning_tokens", 0)
             total_input += usage.get("prompt_tokens", 0)
             total_output += usage.get("completion_tokens", 0)
 
-        # ── Finding Enrichment & Post-processing ──────────────────────────────
-        # 1. Pre-compute a line cache from mapa_diffs for absolute code accuracy
+        # â”€â”€ Finding Enrichment & Post-processing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # 1. Pre-compute a line cache from diff_file_map for absolute code accuracy
         line_cache = {}
-        for path, diff_content in mapa_diffs.items():
+        for path, diff_content in diff_file_map.items():
             file_cache = {}
             for d_line in diff_content.splitlines():
                 if "|" in d_line:
@@ -227,6 +229,36 @@ class CodeReviewService:
                 f["vulnerable_code"] = [line_cache[path][line].rstrip()]
             elif vuln_list and not any("|" in str(v) for v in vuln_list) and path in line_cache and line in line_cache[path]:
                 f["vulnerable_code"] = [line_cache[path][line].rstrip()]
+        # 3. Evidence Bar enforcement
+        # Guard A: import statements are NEVER security code-execution sinks.
+        #          Any CRITICAL/HIGH security finding whose vulnerable_code is an import
+        #          is reclassified as LOW quality.
+        # Guard B: proof gate (LLM findings only) - CRITICAL/HIGH must carry a concrete exploit chain.
+        #          taint_source + sink_line must each be >= 15 chars or finding downgrades to MEDIUM.
+        _import_re = re.compile(r"^\s*[+\-]?\s*(import\s+\w+|from\s+\S+\s+import\s+)")
+        for _f in all_f:
+            _sev = (_f.get("severity") or "").lower()
+            if _sev not in ("critical", "high"):
+                continue
+
+            # Guard A: import statements are never RCE sinks (applies to ALL findings)
+            _vuln = _f.get("vulnerable_code") or []
+            if _f.get("type") == "security" and any(_import_re.match(str(v)) for v in _vuln):
+                log.info("EvidenceBar[import-guard] '%s' line=%s: %s->low/quality", _f.get("title"), _f.get("line"), _sev)
+                _f["severity"] = "low"
+                _f["type"] = "quality"
+                continue
+
+            # Guard B: proof gate - LLM findings only (static findings have deterministic rules)
+            if _f.get("_source") == "static":
+                continue
+
+            _taint = (_f.get("taint_source") or "").strip()
+            _sink = (_f.get("sink_line") or "").strip()
+            if len(_taint) < 15 or len(_sink) < 15:
+                log.info("EvidenceBar[proof-gate] '%s' line=%s: %s->medium (taint=%d, sink=%d chars)", _f.get("title"), _f.get("line"), _sev, len(_taint), len(_sink))
+                _f["severity"] = "medium"
+
 
         # Delegate business rules to the Domain Layer
         verdict_engine = CodeReviewVerdict(self._max_high_block)

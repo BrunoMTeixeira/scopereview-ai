@@ -5,7 +5,7 @@ from ..core.logger import get_logger
 from ..domain.triage import triage_files, TriageLevel
 from ..core.knowledge_ledger import build_ledger, format_ledger_for_prompt
 from ..core.ast_skeleton import compress_map, extract_ac_terms
-from ..ports.repository_client import RepositoryClientPort
+from ..ports.repository_client import PullRequestReaderPort, PullRequestWriterPort
 from ..ports.dedup import PipelineDedupPort
 from .code_review import CodeReviewService
 from .requirements_review import RequirementsReviewService
@@ -32,7 +32,8 @@ class PipelineOrchestrator:
 
     def __init__(
         self,
-        ado: RepositoryClientPort,
+        pr_reader: PullRequestReaderPort,
+        pr_writer: PullRequestWriterPort,
         code_review: CodeReviewService,
         requirements_review: RequirementsReviewService,
         dedup: PipelineDedupPort,
@@ -40,7 +41,8 @@ class PipelineOrchestrator:
         code_model_display_name: str,
         requirements_model_display_name: str,
     ):
-        self._ado = ado
+        self._pr_reader = pr_reader
+        self._pr_writer = pr_writer
         self._code_review = code_review
         self._requirements_review = requirements_review
         self._dedup = dedup
@@ -76,29 +78,29 @@ class PipelineOrchestrator:
             start_time = time.time()
             log.info("Background task started: Starting orchestrated pipeline for PR #%s", pr_id)
 
-            pr_info = await self._ado.get_pr_details(repo_id, pr_id, project)
+            pr_info = await self._pr_reader.get_pr_details(repo_id, pr_id, project)
             if not pr_info:
                 log.error("Could not fetch PR details. Aborting pipeline.")
                 return
 
             commit_sha = pr_info["commit_sha"]
             base_sha = pr_info.get("base_sha", "")
-            mapa_full, mapa_diffs, total_eligible = await self._ado.get_changed_files(repo_id, pr_id, project, commit_sha, base_sha)
+            full_file_map, diff_file_map, total_eligible = await self._pr_reader.get_changed_files(repo_id, pr_id, project, commit_sha, base_sha)
 
-            if not mapa_full and not mapa_diffs:
+            if not full_file_map and not diff_file_map:
                 log.warning("No valid/supported files changed in PR #%s.", pr_id)
-                await self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="No valid/supported files to review.")
+                await self._pr_writer.post_pr_status(repo_id, pr_id, project, state="succeeded", description="No valid/supported files to review.")
                 return
 
-            if total_eligible > len(mapa_full):
-                truncation_msg = f"⚠️ **File Limit Exceeded:** This Pull Request contains {total_eligible} supported files, but the configured limit (`MAX_FILES`) is {len(mapa_full)}. Only the first {len(mapa_full)} files were analyzed."
-                await self._ado.post_comment(repo_id, pr_id, project, truncation_msg)
-                log.warning("PR #%s truncated %d to %d files.", pr_id, total_eligible, len(mapa_full))
+            if total_eligible > len(full_file_map):
+                truncation_msg = f"⚠️ **File Limit Exceeded:** This Pull Request contains {total_eligible} supported files, but the configured limit (`MAX_FILES`) is {len(full_file_map)}. Only the first {len(full_file_map)} files were analyzed."
+                await self._pr_writer.post_comment(repo_id, pr_id, project, truncation_msg)
+                log.warning("PR #%s truncated %d to %d files.", pr_id, total_eligible, len(full_file_map))
 
             # ── STRATEGY 1: Semantic Triage Gate ─────────────────────────────
             # Classify files into SKIP/LIGHT/FULL before any LLM invocation.
             # SKIP files (docs, configs, locks) are removed entirely from both maps.
-            triage_buckets = triage_files(mapa_diffs)
+            triage_buckets = triage_files(diff_file_map)
             skipped_files = set(triage_buckets[TriageLevel.SKIP].keys())
 
             if skipped_files:
@@ -108,27 +110,29 @@ class PipelineOrchestrator:
                     list(skipped_files),
                 )
                 # Remove trivial files from both maps
-                mapa_diffs = {k: v for k, v in mapa_diffs.items() if k not in skipped_files}
-                mapa_full = {k: v for k, v in mapa_full.items() if k not in skipped_files}
+                diff_file_map = {k: v for k, v in diff_file_map.items() if k not in skipped_files}
+                full_file_map = {k: v for k, v in full_file_map.items() if k not in skipped_files}
 
-            if not mapa_diffs:
+            if not diff_file_map:
                 log.info("All files triaged as SKIP for PR #%s. No LLM analysis needed.", pr_id)
-                await self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="All changed files are trivial (skipped).")
+                await self._pr_writer.post_pr_status(repo_id, pr_id, project, state="succeeded", description="All changed files are trivial (skipped).")
                 return
 
             # PRE-LOAD REQUIREMENTS & RULES EARLY
             # Ensures Code Review Agent has visibility into Acceptance Criteria context
             # to detect functional regressions, stubs, and unimplemented requirements.
             log.info("Pre-loading PR Requirements & Repository Rules for early context injection...")
-            work_items = await self._ado.get_work_items(repo_id, pr_id, project)
-            regras_repo = await self._ado.get_repo_rules(repo_id, project, commit_sha)
+            work_items = await self._pr_reader.get_work_items(
+                repo_id, pr_id, project, pr_description=pr_info.get("description", "")
+            )
+            repo_rules = await self._pr_reader.get_repo_rules(repo_id, project, commit_sha)
 
             log.info("Running Code Review Agent (Guided by Requirements)...")
             # ENHANCED CODE REVIEW: Passing Diff (focus), Mapa Full (for skeleton generation),
             # and Work Items (for context-aware regression detection).
             cr_result, cr_metrics = await self._code_review.analyze_pr_code(
-                mapa_diffs=mapa_diffs,
-                mapa_full=mapa_full,
+                diff_file_map=diff_file_map,
+                full_file_map=full_file_map,
                 work_items=work_items,
             )
 
@@ -141,7 +145,7 @@ class PipelineOrchestrator:
                     cr_metrics,
                     model_display_name=self._code_model_display_name,
                 )
-                await self._ado.post_comment(repo_id, pr_id, project, cr_markdown)
+                await self._pr_writer.post_comment(repo_id, pr_id, project, cr_markdown)
 
                 # SHIFT-LEFT: Capture findings to influence the next phase (Requirements)
                 findings_to_inject = [
@@ -171,11 +175,11 @@ class PipelineOrchestrator:
                     "Circuit Breaker: Token budget reached in Phase 1. Skipping Requirements Validation for PR #%s.",
                     pr_id,
                 )
-                await self._ado.post_comment(
+                await self._pr_writer.post_comment(
                     repo_id, pr_id, project,
                     "⚠️ **Circuit Breaker:** The configured token limit (`MAX_TOKEN_BUDGET`) was reached during Code Review. The **Requirements Validation phase was skipped** to control costs."
                 )
-                await self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Token budget exceeded. Manual validation required.")
+                await self._pr_writer.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Token budget exceeded. Manual validation required.")
                 return
 
             # ── STRATEGY 3: Prompt Caching (Azure OpenAI) ────────────────────
@@ -199,13 +203,13 @@ class PipelineOrchestrator:
             # Criteria (quoted strings, UPPER_CASE, snake_case, numerics) and
             # keeps code lines matching those terms. Self-configuring for any domain.
             ac_terms = extract_ac_terms(work_items)
-            mapa_compressed = compress_map(mapa_full, ac_terms=ac_terms)
+            compressed_file_map = compress_map(full_file_map, ac_terms=ac_terms)
 
             req_result, req_metrics = await self._requirements_review.validate_requirements(
                 pr_info=pr_info,
                 work_items=work_items,
-                regras_repo=regras_repo,
-                mapa_ficheiros=mapa_compressed,
+                repo_rules=repo_rules,
+                file_map=compressed_file_map,
                 injected_findings=lean_findings,
                 ledger_context=ledger_context,
             )
@@ -217,7 +221,7 @@ class PipelineOrchestrator:
                     req_metrics,
                     model_display_name=self._requirements_model_display_name,
                 )
-                await self._ado.post_comment(repo_id, pr_id, project, req_markdown)
+                await self._pr_writer.post_comment(repo_id, pr_id, project, req_markdown)
                 log.info("Pipeline completed for PR #%s (code review + requirements).", pr_id)
 
                 # Evaluate final verdict and send PR Status
@@ -233,7 +237,7 @@ class PipelineOrchestrator:
                     state = "succeeded"
                     desc = "ScopeReview AI approved the Pull Request."
 
-                await self._ado.post_pr_status(repo_id, pr_id, project, state=state, description=desc)
+                await self._pr_writer.post_pr_status(repo_id, pr_id, project, state=state, description=desc)
 
                 # Record metrics
                 t_in = cr_metrics.get("input_tokens", 0) + req_metrics.get("input_tokens", 0)
@@ -250,7 +254,7 @@ class PipelineOrchestrator:
                 )
             else:
                 log.error("Requirements Validation failed to generate a result.")
-                await self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Warning: Internal error during requirements validation (Fail-Open).")
+                await self._pr_writer.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Warning: Internal error during requirements validation (Fail-Open).")
                 metrics.record_analysis(
                     success=False,
                     total_tokens=0,
@@ -259,24 +263,30 @@ class PipelineOrchestrator:
                     latency_ms=0
                 )
 
-        except httpx.RequestError as exc:
+        except (httpx.HTTPError, OSError) as exc:
             log.error("Azure DevOps HTTP error for PR #%s: %s", pr_id, exc, exc_info=True)
+            # ARCHITECTURE DECISION: Fail-Open Strategy
+            # AI analysis failures must NOT block developer CI/CD pipelines.
+            # Status is posted as "succeeded" with a warning description so that:
+            # 1. The PR merge is not blocked by tool failures
+            # 2. The warning is visible in the PR status checks UI
+            # 3. Full error details are captured in application logs (log.error with exc_info)
             try:
-                await self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Análise indisponível por falha de rede (Fail-Open).")
-            except Exception:
-                pass
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+                await self._pr_writer.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Analysis unavailable due to network failure (Fail-Open).")
+            except Exception as e:
+                log.error("Failed to post PR status for network failure: %s", e, exc_info=True)
+        except (ValueError, KeyError, TypeError) as exc:
             log.error("Pipeline data error for PR #%s: %s", pr_id, exc, exc_info=True)
             try:
-                await self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Análise indisponível por erro de formatação (Fail-Open).")
-            except Exception:
-                pass
+                await self._pr_writer.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Analysis unavailable due to data formatting error (Fail-Open).")
+            except Exception as e:
+                log.error("Failed to post PR status for data error: %s", e, exc_info=True)
         except Exception as exc:
             log.exception("Unhandled error in pipeline for PR #%s: %s", pr_id, exc)
             try:
-                await self._ado.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Análise indisponível por erro interno (Fail-Open).")
-            except Exception:
-                pass
+                await self._pr_writer.post_pr_status(repo_id, pr_id, project, state="succeeded", description="Analysis unavailable due to internal error (Fail-Open).")
+            except Exception as e:
+                log.error("Failed to post PR status for internal error: %s", e, exc_info=True)
         finally:
             # ESSENTIAL: Ensure the lock is always released to allow future runs
             self._dedup.release(pr_id, "orchestrator")

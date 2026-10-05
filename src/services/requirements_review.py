@@ -38,8 +38,8 @@ class RequirementsReviewService:
         self,
         pr_info: dict,
         work_items: List[dict],
-        regras_repo: str,
-        mapa_ficheiros: Dict[str, str],
+        repo_rules: str,
+        file_map: Dict[str, str],
         injected_findings: Optional[list] = None,
         ledger_context: Optional[str] = None,
     ) -> tuple[Optional[dict], dict]:
@@ -48,8 +48,8 @@ class RequirementsReviewService:
         Args:
             pr_info: Basic PR metadata (title, description, author).
             work_items: List of linked Work Items with AC.
-            regras_repo: Global rules for the repository.
-            mapa_ficheiros: Dictionary mapping file paths to full content.
+            repo_rules: Global rules for the repository.
+            file_map: Dictionary mapping file paths to full content.
             injected_findings: Optional findings from the Code Review phase.
             ledger_context: Optional pre-verified NFR context from Knowledge Ledger.
 
@@ -62,17 +62,29 @@ class RequirementsReviewService:
         prompt = build_requirements_prompt(
             pr_info=pr_info,
             work_items=work_items,
-            regras_repo=regras_repo,
-            mapa_ficheiros=mapa_ficheiros,
+            repo_rules=repo_rules,
+            file_map=file_map,
             injected_findings=injected_findings,
             ledger_context=ledger_context,
         )
 
-        raw_json, usage = await self._ai.complete(
-            system_prompt=REQUIREMENTS_SYSTEM_PROMPT,
-            user_prompt=prompt,
-            max_tokens=self._max_completion_tokens,
-        )
+        try:
+            raw_json, usage = await self._ai.complete(
+                system_prompt=REQUIREMENTS_SYSTEM_PROMPT,
+                user_prompt=prompt,
+                max_tokens=self._max_completion_tokens,
+            )
+        except Exception as e:
+            log.error("AI Requirements completion failed: %s", str(e))
+            return None, {
+                "time": round(time.time() - start_time, 1),
+                "tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "requirements_max_completion_tokens": self._max_completion_tokens,
+                "error": str(e),
+            }
 
         metrics = {
             "time": round(time.time() - start_time, 1),
@@ -88,8 +100,8 @@ class RequirementsReviewService:
 
         try:
             parsed = parse_llm_json_object(raw_json, log_context="requirements")
-            resultado = RequirementsResult(**parsed)
-            normalized = apply_domain_verdict_rules(resultado.model_dump())
+            result = RequirementsResult(**parsed)
+            normalized = apply_domain_verdict_rules(result.model_dump())
             return normalized, metrics
         except ValidationError as err:
             log.error("Failed to validate AI Requirements structure: %s", err)
@@ -101,7 +113,10 @@ class RequirementsReviewService:
                     raw_json[-200:],
                 )
             return None, metrics
-        except Exception as err:  # noqa: BLE001 — json repair / unexpected parse errors
+        except (ValueError, Exception) as err:  # Exception needed if parse_llm_json_object can throw other stuff, but changing to JSONDecodeError/ValueError as requested
+            import json
+            if not isinstance(err, (json.JSONDecodeError, ValueError)):
+                raise
             log.error("Failed to parse AI Requirements JSON: %s", err)
             if raw_json and len(raw_json) > 400:
                 log.warning(
