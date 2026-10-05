@@ -28,7 +28,7 @@ os.environ.setdefault("ADO_PAT", "test-pat")
 
 from src.core.di import injector  # noqa: E402
 from src.core import config  # noqa: E402
-from src.ports.ado_client import AzureDevOpsClientPort  # noqa: E402
+from src.ports.repository_client import PullRequestReaderPort, PullRequestWriterPort  # noqa: E402
 from src.ports.ai_client import AIModelClientPort  # noqa: E402
 from src.ports.dedup import PipelineDedupPort  # noqa: E402
 
@@ -37,13 +37,13 @@ from src.ports.dedup import PipelineDedupPort  # noqa: E402
 # MOCK ADAPTERS (Port implementations for testing)
 # ──────────────────────────────────────────────────────────────────────────────
 
-class MockAzureDevOpsClient(AzureDevOpsClientPort):
+class MockAzureDevOpsClient(PullRequestReaderPort, PullRequestWriterPort):
     """In-memory ADO client stub. Records all post_comment calls for assertions."""
 
     def __init__(self):
         self.post_comment_calls: List[dict] = []
 
-    def get_pr_details(self, repo_id: str, pr_id: int, project: str) -> Optional[dict]:
+    async def get_pr_details(self, repo_id: str, pr_id: int, project: str) -> Optional[dict]:
         return {
             "title": "Test PR",
             "description": "Test Description",
@@ -52,7 +52,7 @@ class MockAzureDevOpsClient(AzureDevOpsClientPort):
             "base_sha": "base123",
         }
 
-    def get_changed_files(
+    async def get_changed_files(
         self, repo_id: str, pr_id: int, project: str, commit_sha: str, base_sha: str = ""
     ) -> Tuple[Dict[str, str], Dict[str, str], int]:
         return (
@@ -61,16 +61,22 @@ class MockAzureDevOpsClient(AzureDevOpsClientPort):
             1,
         )
 
-    def get_work_items(self, repo_id: str, pr_id: int, project: str) -> List[dict]:
+    async def get_work_items(self, repo_id: str, pr_id: int, project: str, pr_description: str = "") -> List[dict]:
         return []
 
-    def get_repo_rules(self, repo_id: str, project: str, commit_sha: str) -> str:
+    async def get_repo_rules(self, repo_id: str, project: str, commit_sha: str) -> str:
         return ""
 
-    def post_comment(self, repo_id: str, pr_id: int, project: str, comment: str) -> None:
+    async def post_comment(self, repo_id: str, pr_id: int, project: str, comment: str) -> None:
         self.post_comment_calls.append({
             "repo_id": repo_id, "pr_id": pr_id,
             "project": project, "comment": comment,
+        })
+
+    async def post_pr_status(self, repo_id: str, pr_id: int, project: str, state: str, description: str) -> None:
+        self.post_comment_calls.append({
+            "repo_id": repo_id, "pr_id": pr_id,
+            "project": project, "comment": description,
         })
 
 

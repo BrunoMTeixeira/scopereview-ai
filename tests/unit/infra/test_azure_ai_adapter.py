@@ -1,6 +1,6 @@
 import pytest
-from unittest.mock import MagicMock, patch
-from requests.exceptions import HTTPError
+from unittest.mock import MagicMock, AsyncMock, patch
+import httpx
 from src.infra.azure_ai import AzureOpenAIClient
 
 @pytest.fixture
@@ -12,9 +12,10 @@ def ai_client():
         max_retries=2
     )
 
-def test_complete_success(ai_client):
+@pytest.mark.anyio
+async def test_complete_success(ai_client):
     """Testa chamada completa com sucesso."""
-    with patch('requests.post') as mock_post:
+    with patch('httpx.AsyncClient.post') as mock_post:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -27,18 +28,20 @@ def test_complete_success(ai_client):
         mock_response.raise_for_status = MagicMock()
         mock_post.return_value = mock_response
         
-        content, usage = ai_client.complete("sys", "user")
+        content, usage = await ai_client.complete("sys", "user")
         
         assert content == '{"result": "ok"}'
         assert usage["total_tokens"] == 150
 
-def test_complete_with_retries_on_429(ai_client):
+@pytest.mark.anyio
+async def test_complete_with_retries_on_429(ai_client):
     """Testa se o cliente faz retry em caso de Rate Limit (429)."""
-    with patch('requests.post') as mock_post:
+    with patch('httpx.AsyncClient.post') as mock_post:
         # Create a proper HTTPError for the 429 response
         mock_429_response = MagicMock()
         mock_429_response.status_code = 429
-        http_error = HTTPError(response=mock_429_response)
+        mock_request = MagicMock()
+        http_error = httpx.HTTPStatusError("429 Too Many Requests", request=mock_request, response=mock_429_response)
         
         mock_200_response = MagicMock()
         mock_200_response.status_code = 200
@@ -50,25 +53,26 @@ def test_complete_with_retries_on_429(ai_client):
         
         # First call raises 429, second call succeeds
         call_count = 0
-        def side_effect(*args, **kwargs):
+        async def side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 resp = MagicMock()
                 resp.status_code = 429
-                resp.raise_for_status.side_effect = HTTPError(response=resp)
+                resp.raise_for_status.side_effect = httpx.HTTPStatusError("429", request=MagicMock(), response=resp)
                 return resp
             return mock_200_response
         
         mock_post.side_effect = side_effect
         
-        content, usage = ai_client.complete("sys", "user")
+        content, usage = await ai_client.complete("sys", "user")
         assert content == '{"ok": true}'
         assert mock_post.call_count == 2
 
-def test_complete_invalid_json_handling(ai_client):
+@pytest.mark.anyio
+async def test_complete_invalid_json_handling(ai_client):
     """Testa como o cliente lida com respostas que não contêm JSON."""
-    with patch('requests.post') as mock_post:
+    with patch('httpx.AsyncClient.post') as mock_post:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
@@ -78,5 +82,5 @@ def test_complete_invalid_json_handling(ai_client):
         }
         mock_post.return_value = mock_response
         
-        content, usage = ai_client.complete("sys", "user")
+        content, usage = await ai_client.complete("sys", "user")
         assert content is None

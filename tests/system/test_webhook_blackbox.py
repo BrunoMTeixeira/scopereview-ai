@@ -51,14 +51,16 @@ def test_webhook_blackbox_success(mock_orchestrator, env_setup, disable_webhook_
     with TestClient(app) as client:
         response = client.post("/webhook/orchestrate", json=payload)
     
-    # Verificação (Output)
-    assert response.status_code == 202
-    data = response.json()
-    assert data["status"] == "accepted"
-    assert data["details"]["pr_id"] == 123
-    
-    # Verificação de efeito colateral (Orquestrador chamado)
-    mock_orchestrator.process_pr_pipeline.assert_called_once_with(123, "repo-abc", "my-project")
+        # Verificao (Output)
+        assert response.status_code == 202
+        data = response.json()
+        assert data["status"] == "accepted"
+        assert data["details"]["pr_id"] == 123
+        
+        # In async/worker model, the worker processes the queue asynchronously
+        import time
+        time.sleep(0.2)
+        mock_orchestrator.process_pr_pipeline.assert_called_once_with(123, "repo-abc", "my-project")
 
 def test_webhook_blackbox_invalid_payload(env_setup, disable_webhook_auth):
     """

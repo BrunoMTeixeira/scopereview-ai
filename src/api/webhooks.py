@@ -6,7 +6,6 @@ import hmac
 
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from fastapi.background import BackgroundTasks
 
 from ..core.config import settings
 from ..core.logger import get_logger
@@ -14,8 +13,7 @@ from ..models.webhooks import ADOWebhookPayload
 
 from ..core.metrics import metrics
 from ..core.rate_limit import RateLimiter
-from ..composition import get_pipeline_orchestrator, injector
-from ..services.orchestrator import PipelineOrchestrator
+from ..composition import injector
 
 log = get_logger("Webhooks")
 router = APIRouter(prefix="/webhook", tags=["Webhooks"])
@@ -100,18 +98,17 @@ def check_rate_limit() -> None:
 
 @router.post("/orchestrate", dependencies=[Depends(check_webhook_secret), Depends(check_rate_limit)])
 async def webhook_orchestrate(
+    request: Request,
     payload: ADOWebhookPayload,
-    background_tasks: BackgroundTasks,
-    orchestrator: PipelineOrchestrator = Depends(get_pipeline_orchestrator),
 ) -> JSONResponse:
-    """Receives ADO PR events and triggers the sequential pipeline asynchronously.
+    """Receives ADO PR events and enqueues them for asynchronous processing by the worker pool.
 
     Validated via Pydantic model for strict schema enforcement.
-    Uses BackgroundTasks to mitigate HTTP timeouts from the caller (Issue #21).
+    Uses asyncio.Queue (via worker pool) to mitigate HTTP timeouts and enforce concurrency limits.
     """
-    evento = payload.eventType
-    if evento not in ("git.pullrequest.created", "git.pullrequest.updated"):
-        return JSONResponse({"status": "ignored", "reason": f"Event type '{evento}' not supported"})
+    event = payload.eventType
+    if event not in ("git.pullrequest.created", "git.pullrequest.updated"):
+        return JSONResponse({"status": "ignored", "reason": f"Event type '{event}' not supported"})
 
     pr = payload.resource
     pr_id = pr.pullRequestId
@@ -125,13 +122,15 @@ async def webhook_orchestrate(
 
     log.info("Received orchestrator webhook for PR #%s (Project: %s)", pr_id, project)
 
-    background_tasks.add_task(orchestrator.process_pr_pipeline, pr_id, repo_id, project)
+    # 2. Add to bounded worker pool queue
+    pr_queue = request.app.state.pr_queue
+    await pr_queue.put((pr_id, repo_id, project))
 
     return JSONResponse(
         status_code=202,
         content={
             "status": "accepted",
             "message": f"Orchestrator Pipeline started for PR {pr_id}",
-            "details": {"pr_id": pr_id, "project": project, "event": evento},
+            "details": {"pr_id": pr_id, "project": project, "event": event},
         },
     )

@@ -1,6 +1,6 @@
-"""Tests for the Semantic Triage Gate (src.core.triage)."""
+"""Tests for the Semantic Triage Gate (src.domain.triage)."""
 
-from src.core.triage import classify_file, triage_files, TriageLevel
+from src.domain.triage import classify_file, triage_files, TriageLevel
 
 
 class TestClassifyFile:

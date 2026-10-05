@@ -23,6 +23,7 @@ wheels/
 
 # Testes e Cobertura
 .pytest_cache/
+.mypy_cache/
 .coverage
 .coverage.*
 htmlcov/
@@ -41,6 +42,7 @@ venv.bak/
 # IDEs
 .vscode/
 .idea/
+.qodo/
 *.swp
 *.swo
 

@@ -96,7 +96,8 @@ def _unparse_import(node: ast.AST) -> str:
     """Fallback for import unparsing when source segment is unavailable."""
     try:
         return ast.unparse(node)
-    except Exception:
+    except Exception as e:
+        log.warning("Failed to unparse import node: %s", e)
         return "# import (unparseable)"
 
 
@@ -209,7 +210,7 @@ def skeletonize_file(path: str, content: str) -> str:
     return skeleton
 
 
-def skeletonize_map(mapa: Dict[str, str]) -> Dict[str, str]:
+def skeletonize_map(file_map: Dict[str, str]) -> Dict[str, str]:
     """Skeletonize all files in a map.
 
     Args:
@@ -218,7 +219,7 @@ def skeletonize_map(mapa: Dict[str, str]) -> Dict[str, str]:
     Returns:
         Dictionary mapping file paths to skeleton content.
     """
-    return {path: skeletonize_file(path, content) for path, content in mapa.items()}
+    return {path: skeletonize_file(path, content) for path, content in file_map.items()}
 
 
 # ─── CODE COMPRESSOR ("AC-Aware Context Pruning") ─────────────────────────────
@@ -433,7 +434,7 @@ def compress_file(path: str, content: str, ac_terms: set = None) -> str:
 
 
 def compress_map(
-    mapa: Dict[str, str],
+    file_map: Dict[str, str],
     ac_terms: set = None,
 ) -> Dict[str, str]:
     """Compress all files in a map to AC-aware pruned view.
@@ -447,5 +448,5 @@ def compress_map(
     """
     return {
         path: compress_file(path, content, ac_terms=ac_terms)
-        for path, content in mapa.items()
+        for path, content in file_map.items()
     }

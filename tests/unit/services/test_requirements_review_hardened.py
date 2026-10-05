@@ -1,14 +1,16 @@
 import pytest
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 from src.services.requirements_review import RequirementsReviewService
 
 @pytest.fixture
 def rr_service():
     ai = MagicMock()
+    ai.complete = AsyncMock()
     return RequirementsReviewService(ai)
 
-def test_validate_requirements_domain_override(rr_service):
+@pytest.mark.anyio
+async def test_validate_requirements_domain_override(rr_service):
     """
     TESTE DE RIGOR: A IA alucina e diz 'APPROVED', mas um requisito MUST esta MISSING.
     O sistema DEVE ignorar o veredito da IA e aplicar a regra de domnio 'NEEDS_WORK'.
@@ -30,17 +32,18 @@ def test_validate_requirements_domain_override(rr_service):
     }
     rr_service._ai.complete.return_value = (json.dumps(json_hallucinated), {"total_tokens": 500, "prompt_tokens": 450, "completion_tokens": 50})
     
-    result, _ = rr_service.validate_requirements(
+    result, _ = await rr_service.validate_requirements(
         pr_info={"title": "T"},
         work_items=[{"id": 1, "title": "R"}],
-        regras_repo="",
-        mapa_ficheiros={"f.py": "c"}
+        repo_rules="",
+        file_map={"f.py": "c"}
     )
     
     assert result["overall_verdict"] == "NEEDS_WORK"
     assert "[Policy: verdict normalized to 'NEEDS_WORK'" in result["verdict_reason"]
 
-def test_validate_requirements_markdown_stripping(rr_service):
+@pytest.mark.anyio
+async def test_validate_requirements_markdown_stripping(rr_service):
     """
     TESTE DE RESILINCIA: A IA envolve o JSON em blocos de markdown e texto extra.
     O parser (via json-repair) deve extrair o objeto corretamente.
@@ -57,11 +60,11 @@ def test_validate_requirements_markdown_stripping(rr_service):
     
     rr_service._ai.complete.return_value = (raw_response, {"total_tokens": 100, "prompt_tokens": 90, "completion_tokens": 10})
     
-    result, _ = rr_service.validate_requirements(
+    result, _ = await rr_service.validate_requirements(
         pr_info={"title": "T"},
         work_items=[{"id": 1, "title": "R"}],
-        regras_repo="",
-        mapa_ficheiros={"f.py": "c"}
+        repo_rules="",
+        file_map={"f.py": "c"}
     )
     
     assert result is not None

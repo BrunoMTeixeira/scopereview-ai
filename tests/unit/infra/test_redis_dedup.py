@@ -46,3 +46,28 @@ def test_redis_dedup_release_deletes():
         d = RedisPipelineDedup("redis://localhost:6379/0", ttl_seconds=60, key_prefix="t")
         d.release(99, "orchestrator")
         mock_client.delete.assert_called_once()
+
+def test_redis_dedup_import_error():
+    import pytest
+    import sys
+    from unittest.mock import patch
+    import importlib
+    import src.infra.redis_dedup
+    
+    with patch("src.infra.redis_dedup.redis", None):
+        with pytest.raises(ImportError, match="The 'redis' package is required"):
+            src.infra.redis_dedup.RedisPipelineDedup("redis://localhost", 60)
+
+def test_redis_dedup_exceptions():
+    import pytest
+    from unittest.mock import patch
+    import src.infra.redis_dedup
+    with patch("src.infra.redis_dedup.redis"):
+        dedup = src.infra.redis_dedup.RedisPipelineDedup("redis://localhost", 60)
+        with patch.object(dedup._client, 'set', side_effect=Exception("Redis error")):
+            with pytest.raises(Exception):
+                dedup.should_skip_duplicate(1, "code_review")
+                
+        with patch.object(dedup._client, 'delete', side_effect=Exception("Redis error")):
+            with pytest.raises(Exception):
+                dedup.release(1, "code_review")

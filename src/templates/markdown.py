@@ -31,8 +31,8 @@ LANG_MAP = {
 }
 
 
-def _linguagem(caminho: str) -> str:
-    ext = caminho.rsplit(".", 1)[-1].lower() if "." in caminho else ""
+def _language(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     return LANG_MAP.get(ext, "")
 
 
@@ -54,7 +54,7 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
     if metrics.get("token_budget_exceeded"):
         budget_note = " · ⚠️ token budget reached (some blocks were not sent to the LLM)"
 
-    linhas_tabela = [
+    table_lines = [
         "## 🔍 Code Review",
         f"> **ScopeReview AI**  ·  `{model_display_name}`  ·  Automated static analysis{budget_note}",
         "",
@@ -68,11 +68,11 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
     ]
 
     count = Counter(f.get("severity", "low") for f in findings)
-    linhas_tabela.append(
+    table_lines.append(
         f"| {count.get('critical', 0)} | {count.get('high', 0)} | {count.get('medium', 0)} | {count.get('low', 0)} |"
     )
 
-    lines = linhas_tabela + ["", "### Findings", ""]
+    lines = table_lines + ["", "### Findings", ""]
 
     for idx, f in enumerate(findings, 1):
         sev = f.get("severity", "low")
@@ -95,18 +95,33 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
         else:
             fixed_code = str(fixed_lines or "")
 
-        lang = _linguagem(f.get("file", ""))
+        lang = _language(f.get("file", ""))
 
         # Prefer compact keys (reason/fix), fallback to legacy (justification/recommendation/description)
+        rationale = f.get("rationale")
         justification = f.get("reason") or f.get("justification") or f.get("description", "")
         recommendation = f.get("fix") or f.get("recommendation", "")
 
-        if vuln_code or fixed_code or justification:
+        if vuln_code or fixed_code or justification or rationale:
             if vuln_code:
                 lines += [f"```{lang}", vuln_code, "```"]
 
+            if rationale:
+                lines += [f"> **Rationale:** {rationale}"]
+
             if justification:
                 lines += [f"> **Justification:** {justification}"]
+
+            taint_source = f.get("taint_source")
+            sink_line = f.get("sink_line")
+            mitigation_present = f.get("mitigation_present")
+
+            if taint_source and taint_source.strip():
+                lines += [f"> **Taint Source:** {taint_source}"]
+            if sink_line and sink_line.strip():
+                lines += [f"> **Dangerous Sink:** {sink_line}"]
+            if mitigation_present is not None:
+                lines += [f"> **Mitigation Present:** {'Yes' if mitigation_present else 'No'}"]
 
             if recommendation:
                 lines += [f"> **Suggestion:** {recommendation}"]
@@ -140,9 +155,9 @@ def format_code_review(res: dict, metrics: dict, *, model_display_name: str) -> 
 # language-aware code evidence blocks for failed requirements (Issue #46).
 
 
-def _progress_bar(requisitos: List[dict]) -> str:
-    total = len(requisitos)
-    done = sum(1 for r in requisitos if r.get("status") == "IMPLEMENTED")
+def _progress_bar(requirements: List[dict]) -> str:
+    total = len(requirements)
+    done = sum(1 for r in requirements if r.get("status") == "IMPLEMENTED")
     if total == 0:
         return "—"
     pct = round(done / total * 100)
@@ -158,24 +173,24 @@ def format_requirements_review(
     *,
     model_display_name: str,
 ) -> str:
-    requisitos = resultado.get("requirements", [])
-    veredicto = resultado.get("overall_verdict", "UNVERIFIABLE")
-    sumario = resultado.get("implementation_summary", "")
+    requirements = resultado.get("requirements", [])
+    verdict = resultado.get("overall_verdict", "UNVERIFIABLE")
+    summary = resultado.get("implementation_summary", "")
     verdict_reason = resultado.get("verdict_reason", "")
     wi_info = resultado.get("work_items_analysed", [])
 
-    requisitos_ord = sorted(requisitos, key=lambda r: STATUS_ORDER.get(r.get("status", "MISSING"), 99))
+    requirements_ord = sorted(requirements, key=lambda r: STATUS_ORDER.get(r.get("status", "MISSING"), 99))
 
-    if veredicto == "APPROVED":
+    if verdict == "APPROVED":
         verdict = "✅  Approved — all verifiable requirements are implemented."
-    elif veredicto == "NO_REQUIREMENTS":
+    elif verdict == "NO_REQUIREMENTS":
         verdict = "📭  No requirements found — link a Work Item with Acceptance Criteria to this PR."
-    elif veredicto == "UNVERIFIABLE":
+    elif verdict == "UNVERIFIABLE":
         verdict = "🔍  Manual review required — requirements need runtime verification."
     else:
         verdict = "⛔  Changes needed — one or more requirements are missing or incomplete."
 
-    contagem = Counter(r.get("status") for r in requisitos)
+    count = Counter(r.get("status") for r in requirements)
 
     lines = [
         "## 📋  Requirements Validation",
@@ -188,16 +203,16 @@ def format_requirements_review(
         "|:--|:--|",
         f"| **Verdict** | {verdict} |",
         f"| **Author** | {pr_info.get('author', '—')} |",
-        f"| **Progress** | {_progress_bar(requisitos)} |",
+        f"| **Progress** | {_progress_bar(requirements)} |",
         "",
         "| ✅ Implemented | ⚠️ Partial | ❌ Missing | 🔍 Needs Testing |",
         "|:--:|:--:|:--:|:--:|",
-        f"| {contagem.get('IMPLEMENTED', 0)} | {contagem.get('PARTIAL', 0)} | {contagem.get('MISSING', 0)} | {contagem.get('UNVERIFIABLE', 0)} |",
+        f"| {count.get('IMPLEMENTED', 0)} | {count.get('PARTIAL', 0)} | {count.get('MISSING', 0)} | {count.get('UNVERIFIABLE', 0)} |",
         "",
     ]
 
-    if sumario:
-        lines += [f"> {sumario}", ""]
+    if summary:
+        lines += [f"> {summary}", ""]
 
     # Display Domain Policy override notice when the deterministic engine corrected the LLM verdict
     if verdict_reason and "[Policy:" in verdict_reason:
@@ -218,7 +233,7 @@ def format_requirements_review(
             lines.append(f"| #{wi.get('id')} | {wi.get('type', '—')} | {prio} | {wi.get('title', '')} | {has_ac} |")
         lines += ["", "---", ""]
 
-    if not requisitos:
+    if not requirements:
         lines += ["### Requirements", "", "No requirements could be extracted.", ""]
     else:
         lines += [
@@ -227,7 +242,7 @@ def format_requirements_review(
             "| ID | Priority | Source | Status | Requirement |",
             "|:--|:--:|:--|:--:|:--|",
         ]
-        for r in requisitos_ord:
+        for r in requirements_ord:
             rid = r.get("id", "?")
             src = SOURCE_LABEL.get(r.get("source", ""), r.get("source", ""))
             emoji = STATUS_EMOJI.get(r.get("status", "MISSING"), "❌")
@@ -237,7 +252,7 @@ def format_requirements_review(
             lines.append(f"| `{rid}` | {prio} | {src} | {emoji} | {desc} |")
         lines += ["", "---", ""]
 
-        needs_work = [r for r in requisitos_ord if r.get("status") in ("MISSING", "PARTIAL")]
+        needs_work = [r for r in requirements_ord if r.get("status") in ("MISSING", "PARTIAL")]
         if needs_work:
             lines += ["### ⚠️ Issues Requiring Attention", ""]
             for r in needs_work:
@@ -246,7 +261,7 @@ def format_requirements_review(
                 status = STATUS_LABEL.get(r.get("status", ""), r.get("status", ""))
                 ev_file = r.get("evidence_file", "unknown_file")
                 ev_line = r.get("evidence_line", "?")
-                lang = _linguagem(ev_file)
+                lang = _language(ev_file)
 
                 lines += [f"**{emoji} {rid}** · {status} · `{ev_file}:{ev_line}`", ""]
                 ev_code = r.get("evidence_code", [])
@@ -264,7 +279,7 @@ def format_requirements_review(
 
                 lines += ["---", ""]
 
-        implemented = [r for r in requisitos_ord if r.get("status") == "IMPLEMENTED"]
+        implemented = [r for r in requirements_ord if r.get("status") == "IMPLEMENTED"]
         if implemented:
             lines += ["### ✅ Implemented", ""]
             for r in implemented:

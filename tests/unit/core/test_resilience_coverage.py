@@ -1,73 +1,80 @@
 import pytest
-import requests
+import httpx
 from unittest.mock import MagicMock
 from src.core.resilience import with_retry_on_transient_http_errors, with_fallback
 
-def test_resilience_timeout():
+@pytest.mark.anyio
+async def test_resilience_timeout():
     attempts = 0
     
     @with_retry_on_transient_http_errors(max_attempts=2, min_wait=0, max_wait=0)
-    def fail_timeout():
+    async def fail_timeout():
         nonlocal attempts
         attempts += 1
-        raise requests.exceptions.Timeout("Timeout")
+        raise httpx.TimeoutException("Timeout")
 
-    with pytest.raises(requests.exceptions.Timeout):
-        fail_timeout()
+    with pytest.raises(httpx.TimeoutException):
+        await fail_timeout()
         
     assert attempts == 2
 
-def test_resilience_connection_error():
+@pytest.mark.anyio
+async def test_resilience_connection_error():
     attempts = 0
     
     @with_retry_on_transient_http_errors(max_attempts=2, min_wait=0, max_wait=0)
-    def fail_conn():
+    async def fail_conn():
         nonlocal attempts
         attempts += 1
-        raise requests.exceptions.ConnectionError("ConnError")
+        raise httpx.ConnectError("ConnError")
 
-    with pytest.raises(requests.exceptions.ConnectionError):
-        fail_conn()
+    with pytest.raises(httpx.ConnectError):
+        await fail_conn()
         
     assert attempts == 2
 
-def test_resilience_http_error_retry():
+@pytest.mark.anyio
+async def test_resilience_http_error_retry():
     attempts = 0
     
     @with_retry_on_transient_http_errors(max_attempts=2, min_wait=0, max_wait=0)
-    def fail_http_500():
+    async def fail_http_500():
         nonlocal attempts
         attempts += 1
         mock_response = MagicMock()
         mock_response.status_code = 500
-        raise requests.exceptions.HTTPError("500 Server Error", response=mock_response)
+        mock_request = MagicMock()
+        raise httpx.HTTPStatusError("500 Server Error", response=mock_response, request=mock_request)
 
-    with pytest.raises(requests.exceptions.HTTPError):
-        fail_http_500()
+    with pytest.raises(httpx.HTTPStatusError):
+        await fail_http_500()
         
     assert attempts == 2
 
-def test_resilience_http_error_no_retry():
+@pytest.mark.anyio
+async def test_resilience_http_error_no_retry():
     attempts = 0
     
     @with_retry_on_transient_http_errors(max_attempts=2, min_wait=0, max_wait=0)
-    def fail_http_404():
+    async def fail_http_404():
         nonlocal attempts
         attempts += 1
         mock_response = MagicMock()
         mock_response.status_code = 404
-        raise requests.exceptions.HTTPError("404 Not Found", response=mock_response)
+        mock_request = MagicMock()
+        raise httpx.HTTPStatusError("404 Not Found", response=mock_response, request=mock_request)
 
-    with pytest.raises(requests.exceptions.HTTPError):
-        fail_http_404()
+    with pytest.raises(httpx.HTTPStatusError):
+        await fail_http_404()
         
     assert attempts == 1  # No retry for 404
 
-def test_with_fallback():
+@pytest.mark.anyio
+async def test_with_fallback():
     @with_retry_on_transient_http_errors(max_attempts=1, min_wait=0, max_wait=0)
     @with_fallback({"status": "fallback"})
-    def fail_with_fallback():
-        raise requests.exceptions.ConnectionError("Fail")
+    async def fail_with_fallback():
+        raise httpx.ConnectError("Fail")
 
-    result = fail_with_fallback()
+    result = await fail_with_fallback()
     assert result == {"status": "fallback"}
